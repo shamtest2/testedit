@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EpicFlowz Max Studio V4</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: { extend: { colors: {
+                dark: { 900: '#0F1115', 800: '#17191E', 700: '#23262D', 600: '#343841' },
+                brand: { 500: '#3B82F6', 600: '#2563EB' }
+            }}}
+        }
+    </script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #0F1115; color: #E5E7EB; overflow: hidden; user-select: none; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #17191E; }
+        ::-webkit-scrollbar-thumb { background: #343841; border-radius: 4px; }
+        
+        .timeline-grid { background-image: linear-gradient(to right, #23262D 1px, transparent 1px); background-size: 50px 100%; position: relative;}
+        .track { height: 64px; position: relative; border-bottom: 1px solid #23262D; background: rgba(35, 38, 45, 0.3); }
+        .clip { position: absolute; height: 48px; top: 8px; border-radius: 6px; cursor: grab; display: flex; align-items: center; padding: 0 8px; font-size: 11px; font-weight: 500; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); z-index: 10; transition: filter 0.2s;}
+        .clip:active { cursor: grabbing; }
+        .clip.selected { border: 2px solid #3B82F6; outline: 2px solid rgba(59, 130, 246, 0.3); z-index: 20;}
+        
+        .clip-video { background: linear-gradient(90deg, #1d4ed8, #2563eb); }
+        .clip-audio { background: linear-gradient(90deg, #047857, #10b981); }
+        .clip-overlay { background: linear-gradient(90deg, #6d28d9, #8b5cf6); }
+        
+        .trim-handle { position: absolute; top: 0; bottom: 0; width: 12px; cursor: ew-resize; background: rgba(0,0,0,0.4); z-index: 30; display: flex; align-items: center; justify-content: center;}
+        .trim-handle::after { content: ''; width: 2px; height: 12px; background: white; border-radius: 2px; }
+        .trim-handle-left { left: 0; } .trim-handle-right { right: 0; }
+
+        .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #EF4444; z-index: 50; pointer-events: none; }
+        .playhead::before { content: ''; position: absolute; top: 0; left: -5px; width: 12px; height: 12px; background: #EF4444; border-radius: 50%; }
+
+        .modal-bg { background: rgba(0,0,0,0.8); backdrop-filter: blur(8px); }
+        .drag-over { background: rgba(59, 130, 246, 0.1) !important; border: 2px dashed #3B82F6; }
+        
+        .blade-cursor { cursor: crosshair !important; }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col">
+
+    <!-- Header -->
+    <header class="h-14 border-b border-dark-700 bg-dark-800 flex items-center justify-between px-4 shrink-0">
+        <div class="flex items-center gap-3">
+            <i class="ph-fill ph-video-camera text-brand-500 text-2xl"></i>
+            <span class="font-bold text-lg tracking-wide">EpicFlowz <span class="text-brand-500">Max</span></span>
+        </div>
+        
+        <div class="flex items-center gap-2 bg-dark-900 px-3 py-1.5 rounded-full border border-dark-700 text-sm cursor-pointer hover:bg-dark-700 transition" onclick="UI.openModal('settings-modal')">
+            <div id="backend-dot" class="w-2.5 h-2.5 rounded-full bg-red-500"></div>
+            <span id="backend-status" class="text-gray-400 font-medium">Disconnected</span>
+        </div>
+
+        <div class="flex items-center gap-3">
+            <div id="proxy-spinner" class="hidden flex items-center gap-2 text-xs text-brand-400 mr-2">
+                <i class="ph ph-spinner-gap animate-spin text-lg"></i> Preview Updating...
+            </div>
+            <button onclick="Engine.exportVideo()" class="bg-brand-600 hover:bg-brand-500 text-white px-5 py-1.5 rounded font-medium flex items-center gap-2 transition shadow-lg shadow-brand-500/20">
+                <i class="ph ph-export"></i> Export Final
+            </button>
+        </div>
+    </header>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="hidden fixed inset-0 z-50 modal-bg flex items-center justify-center">
+        <div class="bg-dark-800 w-[550px] rounded-xl border border-dark-700 shadow-2xl p-6 relative">
+            <button onclick="UI.closeModal('settings-modal')" class="absolute top-4 right-4 text-gray-400 hover:text-white"><i class="ph ph-x text-xl"></i></button>
+            <h2 class="text-xl font-bold mb-4 flex items-center gap-2"><i class="ph ph-plugs"></i> Project Settings & Backend</h2>
+            
+            <div class="space-y-4">
+                <div class="bg-dark-900 p-4 rounded border border-brand-500/30">
+                    <label class="block text-xs font-bold text-brand-400 uppercase tracking-wider mb-2">Connect to Colab</label>
+                    <input type="text" id="setting-url" placeholder="Paste ngrok URL (https://...ngrok-free.app)" class="w-full bg-dark-800 border border-dark-600 rounded px-3 py-2 text-white text-sm mb-2 focus:border-brand-500 outline-none">
+                    <input type="password" id="setting-token" placeholder="Connection Token (Password)" class="w-full bg-dark-800 border border-dark-600 rounded px-3 py-2 text-white text-sm focus:border-brand-500 outline-none">
+                    <p class="text-[10px] text-gray-400 mt-2">
+                        <i class="ph-fill ph-shield-check text-green-500"></i> API Keys stay in your Colab notebook. This token authenticates the browser securely.
+                    </p>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-400 uppercase mb-1">Gemini Model</label>
+                        <select id="setting-model" class="w-full bg-dark-900 border border-dark-700 rounded px-3 py-2 text-white text-sm">
+                            <option value="gemini-1.5-pro">Gemini 1.5 Pro (Best Analysis)</option>
+                            <option value="gemini-1.5-flash">Gemini 1.5 Flash (Fastest)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-400 uppercase mb-1">Export Quality Preset</label>
+                        <select id="setting-quality" class="w-full bg-dark-900 border border-dark-700 rounded px-3 py-2 text-white text-sm" onchange="State.updateSettings()">
+                            <option value="Fast draft">Fast Draft</option>
+                            <option value="Standard" selected>Standard (1080p / 9:16)</option>
+                            <option value="Max quality">Max Quality</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <label class="flex items-center gap-2 cursor-pointer bg-dark-900 p-3 rounded border border-dark-700">
+                    <input type="checkbox" id="setting-upscale" class="accent-brand-500 w-4 h-4" onchange="State.updateSettings()">
+                    <span class="text-sm text-gray-300 font-medium">Upscale low-res footage on Export</span>
+                </label>
+            </div>
+            <div class="mt-6 flex justify-end">
+                <button onclick="Engine.connectBackend()" class="bg-brand-600 text-white px-5 py-2 rounded font-medium hover:bg-brand-500 transition">Connect & Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Status & Toasts -->
+    <div id="status-strip" class="hidden bg-brand-600 text-white text-xs font-bold px-4 py-1.5 flex justify-center items-center gap-2 shadow">
+        <i class="ph ph-spinner animate-spin"></i> <span id="status-msg">Processing...</span>
+    </div>
+    <div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+    <main class="flex-1 flex overflow-hidden">
+        <!-- Left Sidebar: Assets -->
+        <aside class="w-72 border-r border-dark-700 bg-dark-800 flex flex-col z-20">
+            <div class="flex border-b border-dark-700 text-sm bg-dark-900">
+                <button class="flex-1 py-3 text-center border-b-2 border-brand-500 text-white font-medium">Media Bin</button>
+            </div>
+            
+            <div class="p-4 flex-1 overflow-y-auto">
+                <div class="flex gap-2 mb-4">
+                    <button onclick="UI.toggleImportBox()" class="flex-1 bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded py-2 text-sm text-gray-300 flex justify-center items-center gap-1">
+                        <i class="ph ph-link"></i> Link
+                    </button>
+                    <label class="flex-1 bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded py-2 text-sm text-gray-300 flex justify-center items-center gap-1 cursor-pointer">
+                        <i class="ph ph-upload-simple"></i> Upload
+                        <input type="file" id="file-upload" class="hidden" onchange="Engine.uploadFile(event)" accept="video/*,audio/*,image/*">
+                    </label>
+                </div>
+                
+                <div id="import-url-box" class="hidden mb-4 p-3 bg-dark-900 rounded border border-brand-500/50">
+                    <input type="text" id="import-url-input" placeholder="YouTube, Drive, or Direct Link" class="w-full bg-dark-800 border border-dark-600 rounded px-2 py-1.5 text-sm text-white mb-2 outline-none focus:border-brand-500">
+                    <button onclick="Engine.importUrl()" class="w-full bg-brand-600 text-white text-sm py-1.5 rounded hover:bg-brand-500">Import to Colab</button>
+                </div>
+
+                <h3 class="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3 mt-4">Assets (Drag to Timeline)</h3>
+                <div id="media-library" class="grid grid-cols-2 gap-3 pb-10">
+                    <!-- Example Built-in Audio -->
+                    <div class="bg-dark-900 border border-dark-700 rounded p-2 text-xs flex flex-col gap-1 cursor-grab hover:border-brand-500 transition" draggable="true" ondragstart="DragDrop.startBinDrag(event, 'sfx_woosh.mp3', 'audio', 'Woosh SFX (Built-in)')">
+                        <div class="h-10 bg-black rounded flex items-center justify-center pointer-events-none"><i class="ph-fill ph-waveform text-green-500 text-xl"></i></div>
+                        <span class="truncate text-center text-gray-400 pointer-events-none">Woosh SFX</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Center: Video Player -->
+        <section class="flex-1 flex flex-col bg-dark-900 relative">
+            <div class="absolute top-4 left-4 z-10 bg-dark-800/80 backdrop-blur px-3 py-1.5 rounded border border-dark-700 text-xs font-mono text-gray-300 shadow">
+                OUTPUT: <span id="ui-res" class="text-brand-400">1920x1080 (16:9)</span>
+            </div>
+            
+            <div class="flex-1 m-4 bg-black rounded-lg border border-dark-700 relative flex items-center justify-center overflow-hidden shadow-2xl">
+                <video id="preview-player" class="w-full h-full object-contain" loop>
+                    <source src="" type="video/mp4">
+                </video>
+                <div id="player-placeholder" class="absolute inset-0 flex flex-col items-center justify-center bg-dark-900/50 backdrop-blur-sm z-10 text-gray-500">
+                    <i class="ph ph-monitor-play text-6xl mb-2 opacity-40"></i>
+                    <p class="font-medium text-sm text-gray-300">Assemble timeline to preview</p>
+                    <p class="text-xs mt-1 max-w-xs text-center">Edits auto-sync to backend and return a lightweight proxy video.</p>
+                </div>
+                
+                <div class="absolute bottom-4 flex gap-4 bg-dark-800/90 backdrop-blur rounded-full px-6 py-2 border border-dark-600 z-20">
+                    <button onclick="UI.togglePlay()" id="play-btn" class="text-white hover:text-brand-400 transition"><i class="ph-fill ph-play text-2xl"></i></button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Right Sidebar: Properties -->
+        <aside class="w-80 border-l border-dark-700 bg-dark-800 p-4 overflow-y-auto z-20 shadow-[-10px_0_20px_rgba(0,0,0,0.2)]">
+            <h3 class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">Properties</h3>
+            
+            <div id="props-empty" class="text-sm text-gray-500 italic text-center mt-10 border border-dashed border-dark-600 p-4 rounded">
+                Click a clip on the timeline to edit
+            </div>
+            
+            <div id="props-panel" class="hidden space-y-6">
+                <div class="bg-dark-900 p-3 rounded border border-dark-700 flex justify-between">
+                    <span class="text-xs text-gray-400">Name: <span id="prop-id" class="text-gray-200 truncate max-w-[100px] inline-block align-bottom">...</span></span>
+                    <span class="text-xs text-gray-400">Dur: <span id="prop-dur" class="text-brand-400">0s</span></span>
+                </div>
+
+                <div id="prop-transform" class="space-y-4">
+                    <div>
+                        <h4 class="text-sm font-semibold mb-2 text-gray-200">Scale (%)</h4>
+                        <input type="range" id="input-scale" min="10" max="200" value="100" class="w-full accent-brand-500" oninput="State.updateClip('scale', this.value)" onchange="Engine.queueProxyUpdate()">
+                    </div>
+                    <div id="prop-pos" class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="text-xs text-gray-400">X Position</label>
+                            <input type="number" id="input-x" class="w-full bg-dark-900 border border-dark-700 rounded p-1 text-sm text-white" onchange="State.updateClip('x', this.value); Engine.queueProxyUpdate()">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400">Y Position</label>
+                            <input type="number" id="input-y" class="w-full bg-dark-900 border border-dark-700 rounded p-1 text-sm text-white" onchange="State.updateClip('y', this.value); Engine.queueProxyUpdate()">
+                        </div>
+                        <div class="col-span-2 mt-2">
+                            <label class="text-xs text-gray-400">Opacity (%)</label>
+                            <input type="range" id="input-opacity" min="0" max="100" value="100" class="w-full accent-brand-500" oninput="State.updateClip('opacity', this.value)" onchange="Engine.queueProxyUpdate()">
+                        </div>
+                    </div>
+                </div>
+
+                <div id="prop-ai">
+                    <h4 class="text-sm font-semibold mb-2 flex items-center gap-2 text-gray-200"><i class="ph-fill ph-magic-wand text-brand-500"></i> AI Director</h4>
+                    <div class="bg-dark-900 p-4 rounded border border-brand-900/50 space-y-4">
+                        <label class="flex justify-between items-center cursor-pointer">
+                            <span class="text-sm text-gray-300 flex items-center gap-1"><i class="ph ph-crop"></i> Auto-Reframe (9:16)</span>
+                            <input type="checkbox" id="prop-reframe" class="accent-brand-500 w-4 h-4" onchange="State.updateSettings()">
+                        </label>
+                        <button onclick="Engine.generateCaptions()" class="w-full bg-dark-700 border border-dark-600 text-white text-sm py-2 rounded hover:bg-dark-600 flex justify-center items-center gap-2">
+                            <i class="ph ph-subtitles"></i> Auto-Captions (Pop-in)
+                        </button>
+                        <button onclick="Engine.findBestMoments()" class="w-full bg-brand-600 text-white text-sm py-2 rounded hover:bg-brand-500 shadow-lg flex justify-center items-center gap-2">
+                            <i class="ph-fill ph-sparkle"></i> Find Best Hook
+                        </button>
+                    </div>
+                </div>
+                
+                <button onclick="State.deleteSelected()" class="w-full bg-red-900/30 text-red-400 border border-red-900/50 text-sm py-2 rounded hover:bg-red-900/60 transition">
+                    <i class="ph ph-trash"></i> Delete Clip
+                </button>
+            </div>
+        </aside>
+    </main>
+
+    <!-- Timeline -->
+    <section class="h-[340px] bg-dark-900 border-t border-dark-700 flex flex-col shrink-0 z-30 relative">
+        <!-- Tools -->
+        <div class="absolute top-[-40px] left-1/2 transform -translate-x-1/2 bg-dark-800 border border-dark-700 rounded-t-lg px-4 py-1.5 flex gap-4 shadow-lg z-40">
+            <button onclick="UI.toggleBlade()" id="tool-blade" class="text-gray-400 hover:text-white transition" title="Blade Tool (C)"><i class="ph ph-scissors text-lg"></i></button>
+            <div class="w-px h-5 bg-dark-600"></div>
+            <i class="ph ph-magnifying-glass-minus text-gray-500"></i>
+            <input type="range" min="10" max="150" value="20" class="w-32 accent-brand-500 h-1 mt-2 bg-dark-700 rounded-lg appearance-none" oninput="State.zoom = parseInt(this.value); UI.drawTimeline();">
+            <i class="ph ph-magnifying-glass-plus text-gray-500"></i>
+        </div>
+
+        <div class="flex-1 flex overflow-hidden">
+            <!-- Headers -->
+            <div class="w-32 bg-dark-800 border-r border-dark-700 shrink-0 flex flex-col pt-6 z-20">
+                <div class="track flex items-center px-3"><span class="text-xs font-bold text-gray-400"><i class="ph-fill ph-image text-purple-500 mr-1"></i> OVERLAY</span></div>
+                <div class="track flex items-center px-3 bg-dark-700/30"><span class="text-xs font-bold text-gray-200"><i class="ph-fill ph-video-camera text-brand-500 mr-1"></i> VIDEO 1</span></div>
+                <div class="track flex items-center px-3"><span class="text-xs font-bold text-gray-400"><i class="ph-fill ph-waveform text-green-500 mr-1"></i> AUDIO 1</span></div>
+            </div>
+
+            <!-- Canvas -->
+            <div class="flex-1 overflow-x-auto overflow-y-hidden relative timeline-grid" id="timeline-canvas">
+                <div class="h-6 border-b border-dark-700 sticky top-0 bg-dark-900/95 z-40 flex font-mono text-[10px] text-gray-500" id="ruler" onclick="UI.movePlayhead(event)"></div>
+                <div id="playhead" class="playhead" style="left: 0px;"></div>
+                
+                <div class="track" id="track-overlay" data-track="overlay"></div>
+                <div class="track" id="track-video" data-track="video"></div>
+                <div class="track" id="track-audio" data-track="audio"></div>
+            </div>
+        </div>
+    </section>
+
+    <script>
+        const State = {
+            backendUrl: localStorage.getItem('ef_url') || '',
+            token: localStorage.getItem('ef_token') || '',
+            zoom: 20,
+            selectedId: null,
+            bladeMode: false,
+            edl: {
+                tracks: [
+                    { id: 'overlay', clips: [] },
+                    { id: 'video', clips: [] },
+                    { id: 'audio', clips: [] }
+                ],
+                settings: { auto_reframe: false, quality: 'Standard', upscale: false },
+                captions: []
+            }
+        };
+
+        const UI = {
+            openModal: id => document.getElementById(id).classList.remove('hidden'),
+            closeModal: id => document.getElementById(id).classList.add('hidden'),
+            toggleImportBox: () => document.getElementById('import-url-box').classList.toggle('hidden'),
+            
+            toast: (msg, type = 'info') => {
+                const colors = { info: 'bg-dark-700 border-dark-600', error: 'bg-red-900 border-red-500', success: 'bg-green-900 border-green-500' };
+                const t = document.createElement('div');
+                t.className = `px-4 py-3 rounded border text-sm text-white shadow-lg ${colors[type]}`;
+                t.innerText = msg;
+                document.getElementById('toast-container').appendChild(t);
+                setTimeout(() => t.remove(), 3500);
+            },
+            
+            setStatus: (msg, show=true) => {
+                const el = document.getElementById('status-strip');
+                document.getElementById('status-msg').innerText = msg;
+                show ? el.classList.remove('hidden') : el.classList.add('hidden');
+            },
+
+            addAsset: (id, name, type) => {
+                const icon = type === 'video' ? 'ph-video-camera text-brand-500' : (type === 'audio' ? 'ph-waveform text-green-500' : 'ph-image text-purple-500');
+                const html = `
+                    <div class="bg-dark-900 border border-dark-700 rounded p-2 text-xs flex flex-col gap-1 cursor-grab hover:border-brand-500 transition shadow" draggable="true" ondragstart="DragDrop.startBinDrag(event, '${id}', '${type}', '${name}')">
+                        <div class="h-10 bg-black rounded flex items-center justify-center pointer-events-none"><i class="ph-fill ${icon} text-xl"></i></div>
+                        <span class="truncate text-center text-gray-300 pointer-events-none">${name}</span>
+                    </div>`;
+                document.getElementById('media-library').insertAdjacentHTML('beforeend', html);
+            },
+
+            toggleBlade: () => {
+                State.bladeMode = !State.bladeMode;
+                document.getElementById('tool-blade').classList.toggle('text-brand-500', State.bladeMode);
+                document.getElementById('timeline-canvas').classList.toggle('blade-cursor', State.bladeMode);
+            },
+
+            drawTimeline: () => {
+                let hasMedia = false;
+                ['overlay', 'video', 'audio'].forEach(tId => {
+                    const trackEl = document.getElementById(`track-${tId}`);
+                    trackEl.innerHTML = '';
+                    const track = State.edl.tracks.find(t => t.id === tId);
+                    
+                    track.clips.forEach(clip => {
+                        hasMedia = true;
+                        const w = (clip.out - clip.in) * State.zoom;
+                        const l = clip.startAt * State.zoom;
+                        const isSel = State.selectedId === clip.uid ? 'selected' : '';
+                        
+                        const el = document.createElement('div');
+                        el.className = `clip clip-${tId} ${isSel}`;
+                        el.style.width = `${w}px`; el.style.left = `${l}px`;
+                        el.id = `clip-${clip.uid}`;
+                        
+                        el.innerHTML = `
+                            <span class="truncate pointer-events-none">${clip.name}</span>
+                            <div class="trim-handle trim-handle-left" onmousedown="DragDrop.startTrim(event, '${clip.uid}', 'in')"></div>
+                            <div class="trim-handle trim-handle-right" onmousedown="DragDrop.startTrim(event, '${clip.uid}', 'out')"></div>
+                        `;
+                        
+                        el.onmousedown = (e) => {
+                            if(e.target.classList.contains('trim-handle')) return;
+                            
+                            if (State.bladeMode) {
+                                // Split logic
+                                const splitTime = (e.clientX - document.getElementById('timeline-canvas').getBoundingClientRect().left + document.getElementById('timeline-canvas').scrollLeft) / State.zoom;
+                                const splitPointInClip = clip.in + (splitTime - clip.startAt);
+                                
+                                if (splitPointInClip > clip.in && splitPointInClip < clip.out) {
+                                    const newClip = JSON.parse(JSON.stringify(clip));
+                                    newClip.uid = Math.random().toString(36).substr(2, 9);
+                                    clip.out = splitPointInClip;
+                                    newClip.in = splitPointInClip;
+                                    newClip.startAt = splitTime;
+                                    track.clips.push(newClip);
+                                    UI.toggleBlade(); // Turn off blade after cut
+                                    UI.drawTimeline();
+                                    Engine.queueProxyUpdate();
+                                }
+                                return;
+                            }
+
+                            State.selectClip(clip.uid);
+                            DragDrop.startMove(e, clip.uid, tId);
+                        };
+                        trackEl.appendChild(el);
+                    });
+                });
+                
+                // Draw Ruler
+                document.getElementById('ruler').innerHTML = '';
+                for(let i=0; i<300; i+=5) {
+                    const d = document.createElement('div');
+                    d.style.width = `${State.zoom * 5}px`; d.style.flexShrink = '0';
+                    d.innerText = `00:${i.toString().padStart(2, '0')}`;
+                    document.getElementById('ruler').appendChild(d);
+                }
+                
+                document.getElementById('player-placeholder').style.display = hasMedia ? 'none' : 'flex';
+            },
+            
+            togglePlay: () => {
+                const v = document.getElementById('preview-player');
+                const b = document.getElementById('play-btn');
+                if(v.paused && v.src) { v.play(); b.innerHTML = '<i class="ph-fill ph-pause text-2xl"></i>'; }
+                else { v.pause(); b.innerHTML = '<i class="ph-fill ph-play text-2xl"></i>'; }
+            },
+
+            movePlayhead: (e) => {
+                const x = e.clientX - document.getElementById('timeline-canvas').getBoundingClientRect().left + document.getElementById('timeline-canvas').scrollLeft;
+                document.getElementById('playhead').style.left = `${x}px`;
+                const time = x / State.zoom;
+                const v = document.getElementById('preview-player');
+                if(v.src && v.duration) v.currentTime = time;
+            }
+        };
+
+        const DragDrop = {
+            startBinDrag: (e, id, type, name) => e.dataTransfer.setData('json', JSON.stringify({id, type, name})),
+            
+            initZones: () => {
+                ['overlay', 'video', 'audio'].forEach(tId => {
+                    const track = document.getElementById(`track-${tId}`);
+                    track.ondragover = e => { e.preventDefault(); track.classList.add('drag-over'); };
+                    track.ondragleave = e => track.classList.remove('drag-over');
+                    track.ondrop = e => {
+                        e.preventDefault(); track.classList.remove('drag-over');
+                        try {
+                            const data = JSON.parse(e.dataTransfer.getData('json'));
+                            const x = e.clientX - track.getBoundingClientRect().left + document.getElementById('timeline-canvas').scrollLeft;
+                            const startAt = Math.max(0, x / State.zoom);
+                            
+                            // Type validation (lenient overlay to allow images)
+                            if(tId === 'video' && data.type !== 'video') return UI.toast("Drop video on Video track", "error");
+                            if(tId === 'audio' && data.type !== 'audio') return UI.toast("Drop audio on Audio track", "error");
+                            
+                            const clip = { 
+                                uid: Math.random().toString(36).substr(2, 9), 
+                                file_id: data.id, 
+                                name: data.name, 
+                                type: data.type, 
+                                startAt: startAt, 
+                                in: 0, 
+                                out: 15, 
+                                scale: 100, x: 0, y: 0, opacity: 100 
+                            };
+                            State.edl.tracks.find(t=>t.id===tId).clips.push(clip);
+                            UI.drawTimeline(); 
+                            State.selectClip(clip.uid);
+                            Engine.queueProxyUpdate();
+                        } catch(err){}
+                    };
+                });
+            },
+
+            // Trimming Logic
+            trimState: null,
+            startTrim: (e, uid, edge) => {
+                e.stopPropagation();
+                let cRef;
+                State.edl.tracks.forEach(t => { const c = t.clips.find(clip => clip.uid === uid); if(c) cRef = c; });
+                DragDrop.trimState = { uid, edge, startX: e.clientX, clip: cRef, initIn: cRef.in, initOut: cRef.out, initStart: cRef.startAt };
+                document.addEventListener('mousemove', DragDrop.doTrim);
+                document.addEventListener('mouseup', DragDrop.endTrim);
+            },
+            doTrim: (e) => {
+                if(!DragDrop.trimState) return;
+                const dSec = (e.clientX - DragDrop.trimState.startX) / State.zoom;
+                const c = DragDrop.trimState.clip;
+                if(DragDrop.trimState.edge === 'in') {
+                    const newIn = Math.max(0, DragDrop.trimState.initIn + dSec);
+                    const newStart = Math.max(0, DragDrop.trimState.initStart + dSec);
+                    if(newIn < c.out - 0.5) { c.in = newIn; c.startAt = newStart; }
+                } else {
+                    const newOut = Math.max(c.in + 0.5, DragDrop.trimState.initOut + dSec);
+                    c.out = newOut;
+                }
+                UI.drawTimeline();
+                if(State.selectedId === c.uid) document.getElementById('prop-dur').innerText = `${(c.out - c.in).toFixed(1)}s`;
+            },
+            endTrim: () => { 
+                DragDrop.trimState = null; 
+                document.removeEventListener('mousemove', DragDrop.doTrim); document.removeEventListener('mouseup', DragDrop.endTrim); 
+                Engine.queueProxyUpdate();
+            },
+
+            // Moving Logic
+            moveState: null,
+            startMove: (e, uid, tId) => {
+                e.stopPropagation();
+                const clip = State.edl.tracks.find(t=>t.id===tId).clips.find(c=>c.uid===uid);
+                DragDrop.moveState = { clip, startX: e.clientX, initStart: clip.startAt };
+                document.addEventListener('mousemove', DragDrop.doMove);
+                document.addEventListener('mouseup', DragDrop.endMove);
+            },
+            doMove: (e) => {
+                if(!DragDrop.moveState) return;
+                const dSec = (e.clientX - DragDrop.moveState.startX) / State.zoom;
+                DragDrop.moveState.clip.startAt = Math.max(0, DragDrop.moveState.initStart + dSec);
+                UI.drawTimeline();
+            },
+            endMove: () => { 
+                DragDrop.moveState = null; 
+                document.removeEventListener('mousemove', DragDrop.doMove); document.removeEventListener('mouseup', DragDrop.endMove); 
+                Engine.queueProxyUpdate();
+            }
+        };
+
+        State.selectClip = (uid) => {
+            State.selectedId = uid; UI.drawTimeline();
+            document.getElementById('props-empty').classList.add('hidden');
+            document.getElementById('props-panel').classList.remove('hidden');
+            
+            let cRef, tId;
+            State.edl.tracks.forEach(t => { const c = t.clips.find(clip => clip.uid === uid); if(c) {cRef = c; tId = t.id;} });
+            
+            document.getElementById('prop-id').innerText = cRef.name;
+            document.getElementById('prop-dur').innerText = `${(cRef.out - cRef.in).toFixed(1)}s`;
+            
+            // Show/Hide specific properties based on track
+            document.getElementById('prop-transform').classList.toggle('hidden', tId === 'audio');
+            document.getElementById('prop-pos').classList.toggle('hidden', tId === 'video'); // Main video pos handled by reframe
+            document.getElementById('prop-ai').classList.toggle('hidden', tId !== 'video');
+            
+            if(cRef.scale !== undefined) document.getElementById('input-scale').value = cRef.scale;
+            if(cRef.x !== undefined) document.getElementById('input-x').value = cRef.x;
+            if(cRef.y !== undefined) document.getElementById('input-y').value = cRef.y;
+            if(cRef.opacity !== undefined) document.getElementById('input-opacity').value = cRef.opacity;
+        };
+
+        State.updateClip = (key, val) => {
+            if(!State.selectedId) return;
+            State.edl.tracks.forEach(t => { const c = t.clips.find(clip => clip.uid === State.selectedId); if(c) c[key] = parseFloat(val); });
+        };
+
+        State.deleteSelected = () => {
+            if(!State.selectedId) return;
+            State.edl.tracks.forEach(t => t.clips = t.clips.filter(c => c.uid !== State.selectedId));
+            State.selectedId = null;
+            document.getElementById('props-empty').classList.remove('hidden');
+            document.getElementById('props-panel').classList.add('hidden');
+            UI.drawTimeline();
+            Engine.queueProxyUpdate();
+        };
+
+        State.updateSettings = () => {
+            State.edl.settings.auto_reframe = document.getElementById('prop-reframe').checked;
+            State.edl.settings.quality = document.getElementById('setting-quality').value;
+            State.edl.settings.upscale = document.getElementById('setting-upscale').checked;
+            document.getElementById('ui-res').innerText = State.edl.settings.auto_reframe ? "1080x1920 (9:16 Auto)" : "1920x1080 (16:9)";
+            Engine.queueProxyUpdate();
+        };
+
+        const Engine = {
+            proxyTimeout: null,
+            api: async (endpoint, options = {}) => {
+                if (!State.backendUrl) throw new Error("Connect to Backend first!");
+                const url = `${State.backendUrl.replace(/\/$/, '')}${endpoint}`;
+                const headers = { 'X-App-Token': State.token, ...options.headers };
+                if(options.body instanceof FormData) delete headers['Content-Type'];
+                const res = await fetch(url, { ...options, headers });
+                if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.detail || `API Error ${res.status}`); }
+                return res.headers.get('content-type')?.includes('json') ? await res.json() : await res.blob();
+            },
+
+            connectBackend: async () => {
+                State.backendUrl = document.getElementById('setting-url').value.trim();
+                State.token = document.getElementById('setting-token').value.trim();
+                if(!State.backendUrl) return UI.toast("URL required", "error");
+                localStorage.setItem('ef_url', State.backendUrl); localStorage.setItem('ef_token', State.token);
+                
+                try {
+                    const res = await Engine.api('/ping');
+                    document.getElementById('backend-dot').className = 'w-2.5 h-2.5 rounded-full bg-green-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]';
+                    document.getElementById('backend-status').innerText = `Connected (${res.workspace})`;
+                    UI.closeModal('settings-modal'); UI.toast("Connected Securely", "success");
+                } catch (e) {
+                    document.getElementById('backend-dot').className = 'w-2.5 h-2.5 rounded-full bg-red-500';
+                    document.getElementById('backend-status').innerText = "Connection Failed";
+                    UI.toast("Connection failed. Check URL/Token.", "error");
+                }
+            },
+
+            importUrl: async () => {
+                const url = document.getElementById('import-url-input').value;
+                if(!url) return;
+                UI.setStatus("Downloading media via yt-dlp..."); UI.toggleImportBox();
+                try {
+                    const res = await Engine.api('/import-url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
+                    UI.addAsset(res.file_id, res.title, res.type);
+                    document.getElementById('import-url-input').value = '';
+                    UI.toast("Import Complete", "success");
+                } catch (e) { UI.toast(e.message, "error"); }
+                finally { UI.setStatus("", false); }
+            },
+
+            uploadFile: async (e) => {
+                const file = e.target.files[0];
+                if(!file) return;
+                const fd = new FormData(); fd.append('file', file);
+                UI.setStatus(`Uploading ${file.name}...`);
+                try {
+                    const res = await Engine.api('/upload', { method: 'POST', body: fd });
+                    UI.addAsset(res.file_id, res.title, res.type);
+                    UI.toast("Upload Complete", "success");
+                } catch(err) { UI.toast(err.message, "error"); }
+                finally { UI.setStatus("", false); }
+            },
+
+            queueProxyUpdate: () => {
+                // Debounce to avoid spamming the backend while dragging sliders
+                if(State.edl.tracks.every(t => t.clips.length === 0)) return;
+                document.getElementById('proxy-spinner').classList.remove('hidden');
+                clearTimeout(Engine.proxyTimeout);
+                Engine.proxyTimeout = setTimeout(Engine.generateProxy, 1500);
+            },
+
+            generateProxy: async () => {
+                try {
+                    const res = await Engine.api('/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(State.edl) });
+                    const videoEl = document.getElementById('preview-player');
+                    const currentTime = videoEl.currentTime; // remember where we were
+                    videoEl.src = `${State.backendUrl.replace(/\/$/, '')}${res.url}?t=${Date.now()}`;
+                    videoEl.load();
+                    videoEl.currentTime = currentTime;
+                } catch (e) { UI.toast("Proxy generation failed", "error"); } 
+                finally { document.getElementById('proxy-spinner').classList.add('hidden'); }
+            },
+
+            generateCaptions: async () => {
+                const videoTrack = State.edl.tracks.find(t=>t.id==='video');
+                if(!videoTrack || videoTrack.clips.length === 0) return UI.toast("Need video on timeline first", "error");
+                const mainClip = videoTrack.clips[0];
+                
+                UI.setStatus("Transcribing audio (Whisper AI)...");
+                try {
+                    const res = await Engine.api(`/transcribe/${mainClip.file_id}`);
+                    // Adjust word timings based on clip in/out
+                    State.edl.captions = res.transcript.filter(w => w.start >= mainClip.in && w.end <= mainClip.out).map(w => {
+                        return { word: w.word, start: (w.start - mainClip.in) + mainClip.startAt, end: (w.end - mainClip.in) + mainClip.startAt };
+                    });
+                    UI.toast("Captions generated & styled!", "success");
+                    Engine.queueProxyUpdate();
+                } catch(e) { UI.toast(e.message, "error"); }
+                finally { UI.setStatus("", false); }
+            },
+
+            findBestMoments: async () => {
+                if(!State.selectedId) return;
+                const clip = State.edl.tracks.find(t=>t.id==='video').clips.find(c => c.uid === State.selectedId);
+                if(!clip) return;
+                
+                UI.setStatus("1/2: Whisper AI Transcribing...");
+                const model = document.getElementById('setting-model').value;
+                
+                try {
+                    const tRes = await Engine.api(`/transcribe/${clip.file_id}`);
+                    UI.setStatus("2/2: Gemini AI Analyzing Hooks...");
+                    const gRes = await Engine.api('/auto-edit', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ transcript: tRes.text, model_name: model })
+                    });
+                    
+                    clip.in = gRes.start_time; clip.out = gRes.end_time;
+                    UI.drawTimeline(); State.selectClip(clip.uid);
+                    UI.toast(`Cut Applied! Reason: "${gRes.reason}"`, "success");
+                    Engine.queueProxyUpdate();
+                } catch(e) { UI.toast(e.message, "error"); }
+                finally { UI.setStatus("", false); }
+            },
+
+            exportVideo: async () => {
+                if(State.edl.tracks.every(t => t.clips.length === 0)) return UI.toast("Timeline empty", "error");
+                UI.setStatus("Rendering Final Quality Video... (This takes a moment)");
+                try {
+                    const res = await Engine.api('/render', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(State.edl) });
+                    window.open(`${State.backendUrl.replace(/\/$/, '')}${res.download_url}`, '_blank');
+                    UI.toast("Export Download Started!", "success");
+                } catch(e) { UI.toast(e.message, "error"); }
+                finally { UI.setStatus("", false); }
+            }
+        };
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('setting-url').value = State.backendUrl;
+            document.getElementById('setting-token').value = State.token;
+            UI.drawTimeline(); DragDrop.initZones();
+            
+            // Sync playhead to video time
+            document.getElementById('preview-player').addEventListener('timeupdate', (e) => {
+                if(!e.target.paused) document.getElementById('playhead').style.left = `${e.target.currentTime * State.zoom}px`;
+            });
+
+            if(!State.token) UI.openModal('settings-modal');
+            else Engine.connectBackend();
+        });
+    </script>
+</body>
+</html>

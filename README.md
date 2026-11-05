@@ -28,3 +28,21 @@ What changed in this branch (M8, the deep level build):
 
 Read `game/src/docs/LEVELS.md` for the six sites and `game/src/docs/STATE.md` for the
 current status.
+
+## Getting this back into your game repo
+
+`terraform-m8-vs-clean-v1.patch` at the root of this repository is a plain `git` patch
+against `testsharm/gameprotype` branch `clean-v1` (verified: it applies to a fresh clone
+and the patched clone builds).
+
+In your Codespace:
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+git checkout clean-v1
+git apply --check terraform-m8-vs-clean-v1.patch   # dry run, must print nothing
+git apply terraform-m8-vs-clean-v1.patch
+npm run build                                      # must end with "built in ..."
+```
+
+Then reload the game tab (Vite picks the change up on its own).

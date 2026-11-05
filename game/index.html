@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>TerraForm 3D: City Rescue</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f172a'/%3E%3Ccircle cx='16' cy='16' r='9' fill='%23fbbf24'/%3E%3C/svg%3E" />
+    <script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>
+    <style>
+        :root {
+            --text: #f1f5f9;
+            --text-mid: #cbd5e1;
+            --text-dim: #94a3b8;
+            --amber: #fbbf24;
+            --amber-deep: #d97706;
+            --ink: #070b12;
+            --line: rgba(255, 255, 255, 0.14);
+            --font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+            --mm: clamp(96px, 22vh, 160px);
+            --key: 40px;
+            --edge: 10px;
+            --lc: 140px;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+        html, body { width: 100%; height: 100%; }
+        body {
+            background-color: #0d1117;
+            font-family: var(--font-ui);
+            font-size: 16px;
+            overflow: hidden;
+            color: var(--text);
+        }
+        button { font-family: var(--font-ui); }
+
+        #game-container {
+            width: 100%; height: 100%;
+            display: block; position: absolute; top: 0; left: 0;
+            z-index: 1; cursor: grab; touch-action: none;
+        }
+
+        /* the old second coin counter made by JobEffects: hidden, one counter only */
+        .je-counter { display: none !important; }
+        /* old mission text: kept only because main.js writes to these ids */
+        .top-hud { display: none !important; }
+        /* old flat speed box: kept only because main.js writes to #speed-val. The round dial (GameUI.js) shows the speed. */
+        .speedometer-ui { display: none !important; }
+
+        /* ---------- shared solid steel panel: thick dark edge, lower shoulder, top shine ---------- */
+        .coins-ui, .hud-btn, .camera-ui, .control-card, .shop-box, .victory-box, .pause-box {
+            background: linear-gradient(180deg, #2b384e 0%, #18212f 100%);
+            border: 2px solid #0a0f18;
+            box-shadow: 0 4px 0 var(--ink), 0 12px 22px rgba(0, 0, 0, 0.4), inset 0 2px 0 rgba(255, 255, 255, 0.13);
+        }
+
+        /* ---------- LOADING ---------- */
+        #loading-screen {
+            position: absolute; inset: 0;
+            background: radial-gradient(ellipse at center, #1b2535 0%, #0b1018 70%);
+            color: #fff;
+            z-index: 999;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            gap: 14px;
+            transition: opacity 0.4s ease;
+        }
+        #loading-screen.hidden { opacity: 0; pointer-events: none; }
+        .load-title { font-size: 40px; font-weight: 900; letter-spacing: 4px; text-transform: uppercase; }
+        .load-title span { color: var(--amber); }
+        .load-bar {
+            width: min(320px, 70vw); height: 12px; border-radius: 3px; overflow: hidden;
+            background: repeating-linear-gradient(-45deg, #fbbf24 0 10px, #161d29 10px 20px);
+            background-size: 28.28px 100%;
+            animation: slide 0.7s linear infinite;
+        }
+        @keyframes slide { to { background-position-x: 28.28px; } }
+        .loading-text { font-size: 16px; font-weight: 700; letter-spacing: 3px; text-transform: uppercase; color: var(--text-dim); }
+
+        /* ---------- LEFT COLUMN: coins, one main button, three small icon buttons ---------- */
+        .left-col {
+            position: absolute;
+            top: calc(var(--edge) + env(safe-area-inset-top));
+            left: calc(var(--edge) + env(safe-area-inset-left));
+            z-index: 12;
+            display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
+            pointer-events: none;
+        }
+        .coins-ui {
+            display: flex; align-items: center; gap: 10px;
+            height: 44px;
+            padding: 0 18px 0 10px;
+            border-radius: 12px;
+            font-size: 24px; font-weight: 900;
+            color: var(--amber);
+            text-shadow: 0 2px 0 rgba(0, 0, 0, 0.5);
+            font-variant-numeric: tabular-nums;
+        }
+        .coins-ui.bump { animation: bump 0.35s ease; }
+        @keyframes bump { 0% { transform: scale(1); } 40% { transform: scale(1.14); } 100% { transform: scale(1); } }
+        .coin-icon {
+            width: 24px; height: 24px;
+            border-radius: 50%;
+            background: radial-gradient(circle at 35% 30%, #fff4c2, #fbbf24 60%, #b45309);
+            box-shadow: 0 0 0 2px #7c3f06, 0 0 10px rgba(251, 191, 36, 0.45);
+        }
+        .util-row { display: flex; gap: 8px; }
+        .hud-btn {
+            pointer-events: auto;
+            display: flex; align-items: center; gap: 10px;
+            height: 46px;
+            padding: 0 16px 0 12px;
+            border-radius: 12px;
+            color: var(--text);
+            font-size: 16px; font-weight: 800;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            cursor: pointer;
+            touch-action: manipulation;
+            transition: transform 0.06s ease, box-shadow 0.06s ease, filter 0.12s ease;
+        }
+        .hud-btn .ico { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; color: var(--amber); }
+        .hud-btn svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2.3; stroke-linecap: round; stroke-linejoin: round; }
+        .hud-btn.sq { width: 46px; min-width: 46px; padding: 0; justify-content: center; }
+        .hud-btn.sq .lbl { display: none; }
+        .hud-btn.muted .i-on { display: none; }
+        .hud-btn:not(.muted) .i-off { display: none; }
+        .hud-btn.muted .ico { color: #f87171; }
+        .hud-btn:hover { filter: brightness(1.15); }
+        .hud-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink), 0 6px 12px rgba(0, 0, 0, 0.4), inset 0 2px 0 rgba(255, 255, 255, 0.1); }
+        .hud-btn.primary {
+            min-width: 154px;
+            color: #1a1205;
+            background: linear-gradient(180deg, #fde68a 0%, #fbbf24 48%, #d98a06 100%);
+            border-color: #5a3a05;
+            box-shadow: 0 4px 0 #6b4306, 0 12px 22px rgba(0, 0, 0, 0.4), inset 0 2px 0 rgba(255, 255, 255, 0.6);
+        }
+        .hud-btn.primary .ico { color: #1a1205; }
+        .hud-btn.primary:active { box-shadow: 0 1px 0 #6b4306, 0 6px 12px rgba(0, 0, 0, 0.4), inset 0 2px 0 rgba(255, 255, 255, 0.5); }
+
+        /* ---------- RIGHT COLUMN: minimap and camera switch ---------- */
+        .right-col {
+            position: absolute;
+            top: calc(var(--edge) + env(safe-area-inset-top));
+            right: calc(var(--edge) + env(safe-area-inset-right));
+            z-index: 12;
+            display: flex; flex-direction: column; align-items: flex-end; gap: 12px;
+            pointer-events: none;
+        }
+        .minimap-container {
+            position: relative;
+            width: var(--mm); height: var(--mm);
+            background: radial-gradient(circle, rgba(18, 30, 44, 0.85) 0%, rgba(10, 16, 26, 0.92) 100%);
+            border: 3px solid #0a0f18;
+            border-radius: 50%;
+            overflow: hidden;
+            box-shadow: 0 0 0 3px #fbbf24, 0 4px 0 3px var(--ink), 0 12px 22px rgba(0, 0, 0, 0.45), inset 0 0 18px rgba(0, 0, 0, 0.6);
+            display: flex; align-items: center; justify-content: center;
+        }
+        #minimap-canvas { width: 100%; height: 100%; display: block; }
+        .compass-n {
+            position: absolute; top: 2px; left: 50%; transform: translateX(-50%);
+            font-size: 16px; font-weight: 900;
+            color: var(--amber);
+            z-index: 11; pointer-events: none;
+            text-shadow: 0 1px 4px #000;
+        }
+        .compass-s { display: none; }
+
+        .camera-ui {
+            display: flex; flex-direction: column;
+            overflow: hidden;
+            border-radius: 12px;
+            pointer-events: auto;
+        }
+        .cam-btn {
+            height: 36px; min-width: 104px;
+            padding: 0 14px;
+            border: 0; border-radius: 0;
+            background: transparent;
+            font-size: 16px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.6px; text-align: left;
+            color: var(--text);
+            cursor: pointer;
+            touch-action: manipulation;
+        }
+        .cam-btn + .cam-btn { border-top: 1px solid rgba(255, 255, 255, 0.09); }
+        .cam-btn:hover { background: rgba(255, 255, 255, 0.08); }
+        .cam-btn.active {
+            color: #1a1205;
+            background: linear-gradient(180deg, #fde68a 0%, #f59e0b 100%);
+            box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.55);
+        }
+        #cam-cycle { display: none; pointer-events: auto; }
+
+        /* ---------- BOTTOM BAR ---------- */
+        .dashboard {
+            position: absolute;
+            left: 0; right: 0;
+            bottom: calc(var(--edge) + env(safe-area-inset-bottom) + 4px);
+            padding: 0 calc(var(--edge) + env(safe-area-inset-right)) 0 calc(var(--edge) + env(safe-area-inset-left));
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            gap: 10px;
+            z-index: 20;
+            pointer-events: none;
+        }
+        .dash-right { display: flex; align-items: flex-end; gap: 12px; }
+        #dial-slot { flex: none; pointer-events: none; }
+        .control-card {
+            border-radius: 12px;
+            padding: 8px 10px 10px;
+            display: flex; flex-direction: column; align-items: center;
+            gap: 6px;
+            pointer-events: auto;
+            transition: opacity 0.5s ease;
+        }
+        .dashboard.dim .control-card { opacity: 0.6; }
+        .dashboard.dim .control-card:hover { opacity: 1; }
+        .control-card .title { font-size: 16px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); }
+        .key-row { display: flex; gap: 6px; }
+        .key {
+            min-width: var(--key);
+            height: var(--key);
+            padding: 0 10px;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 8px;
+            border: 1px solid #0a1017;
+            border-bottom-width: 4px;
+            background: linear-gradient(180deg, #55627a 0%, #2d3646 100%);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+            color: var(--text);
+            font-size: 18px; font-weight: 800;
+            cursor: pointer;
+            touch-action: none;
+        }
+        .key.active-key, .key.is-pressed, .key:active {
+            background: linear-gradient(180deg, #fde68a 0%, #f59e0b 100%);
+            color: #1a1205;
+            border-bottom-width: 2px;
+            transform: translateY(2px);
+            box-shadow: 0 0 12px rgba(251, 191, 36, 0.55);
+        }
+        .hint { display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 600; color: var(--text-mid); }
+        .hint .key { cursor: default; min-width: 64px; height: 28px; font-size: 16px; pointer-events: none; }
+
+        /* ---------- OVERLAYS (shop, victory, pause) ---------- */
+        #shop-overlay, #victory-overlay, #pause-overlay {
+            position: absolute; inset: 0;
+            background: rgba(5, 8, 12, 0.8);
+            z-index: 1000;
+            display: none;
+            flex-direction: column; align-items: center; justify-content: center;
+            padding: 16px;
+        }
+        #shop-overlay.active, #victory-overlay.active, #pause-overlay.active { display: flex; }
+        .shop-box, .victory-box, .pause-box {
+            border-radius: 16px;
+            padding: 24px 24px 24px;
+            width: 100%;
+            max-width: 540px;
+            max-height: calc(100vh - 32px);
+            overflow-y: auto;
+            text-align: center;
+            box-shadow: 0 6px 0 var(--ink), 0 24px 60px rgba(0, 0, 0, 0.65), inset 0 2px 0 rgba(255, 255, 255, 0.13);
+        }
+        .pause-box { max-width: 380px; }
+        .shop-box h1, .victory-box h1, .pause-box h1 {
+            font-size: 28px; font-weight: 900; letter-spacing: 1.5px; text-transform: uppercase;
+            color: var(--text);
+            margin-bottom: 18px;
+        }
+        .shop-box h1::after, .victory-box h1::after, .pause-box h1::after {
+            content: ""; display: block; width: 56px; height: 4px; margin: 10px auto 0; border-radius: 2px; background: var(--amber);
+        }
+        .victory-box h1 { color: var(--amber); }
+        .victory-box p, .pause-box p { font-size: 18px; font-weight: 500; color: var(--text-mid); margin-bottom: 8px; }
+        .upgrade-item {
+            display: flex; justify-content: space-between; align-items: center;
+            gap: 14px;
+            background: rgba(0, 0, 0, 0.28);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-left: 4px solid var(--amber);
+            padding: 12px 14px;
+            border-radius: 10px;
+            margin-bottom: 10px;
+        }
+        .upgrade-info h3 { font-size: 18px; font-weight: 800; color: var(--text); margin-bottom: 2px; text-align: left; }
+        .upgrade-info p { font-size: 16px; font-weight: 500; color: var(--text-dim); text-align: left; }
+        .buy-btn {
+            flex-shrink: 0;
+            min-height: 46px;
+            background: linear-gradient(180deg, #fde68a 0%, #f59e0b 100%);
+            border: 1px solid #5a3a05;
+            border-bottom: 4px solid #8a5a06;
+            color: #1a1205;
+            font-size: 16px; font-weight: 800;
+            padding: 6px 14px;
+            border-radius: 10px;
+            cursor: pointer;
+        }
+        .buy-btn:hover:not(:disabled) { filter: brightness(1.1); }
+        .buy-btn:active:not(:disabled) { transform: translateY(2px); border-bottom-width: 2px; }
+        .buy-btn:disabled {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            color: rgba(255, 255, 255, 0.45);
+            cursor: default;
+        }
+        .close-btn, .restart-main-btn {
+            margin-top: 12px;
+            min-height: 48px;
+            background: linear-gradient(180deg, #55627a 0%, #2d3646 100%);
+            color: var(--text);
+            border: 1px solid #0a1017;
+            border-bottom-width: 4px;
+            padding: 8px 40px;
+            border-radius: 10px;
+            font-size: 16px; font-weight: 800;
+            text-transform: uppercase; letter-spacing: 1.2px;
+            cursor: pointer;
+        }
+        .close-btn:hover, .restart-main-btn:hover { filter: brightness(1.15); }
+        .close-btn:active, .restart-main-btn:active { transform: translateY(2px); border-bottom-width: 2px; }
+
+        /* ---------- TOUCH SCREENS: big keys ---------- */
+        @media (pointer: coarse) {
+            :root { --key: 56px; }
+            .desk-only { display: none !important; }
+            .key { font-size: 20px; }
+        }
+
+        /* ---------- SHORT OR NARROW SCREENS: compact layout ---------- */
+        @media (max-height: 420px), (max-width: 560px) {
+            :root { --mm: 84px; --edge: 8px; --lc: 92px; --key: 48px; }
+            .hud-btn.primary { min-width: 46px; width: 46px; padding: 0; justify-content: center; }
+            .hud-btn.primary .lbl { display: none; }
+            .util-row { flex-direction: column; }
+            .coins-ui { height: 42px; font-size: 20px; padding: 0 12px 0 8px; gap: 8px; }
+            .coin-icon { width: 20px; height: 20px; }
+            .camera-ui { display: none; }
+            #cam-cycle { display: flex; }
+            .compass-n { display: none; }
+            .control-card .title { display: none; }
+            .desk-only { display: none !important; }
+        }
+
+        .shop-rank {
+            margin: 14px 0 4px;
+            font-size: 13px;
+            font-weight: 700;
+            color: #fbbf24;
+            text-align: center;
+            letter-spacing: 0.3px;
+        }
+
+        @media (max-width: 560px) {
+            :root { --key: 44px; --mm: 80px; }
+            .dash-right { flex-direction: column; align-items: flex-end; gap: 8px; }
+            .key { padding: 0 6px; }
+            .shop-box, .victory-box, .pause-box { padding: 20px 14px 18px; }
+            .upgrade-item { flex-direction: column; align-items: stretch; }
+        }
+    </style>
+</head>
+<body>
+    <div id="loading-screen">
+        <div class="load-title">Terraform <span>3D</span></div>
+        <div class="load-bar"></div>
+        <div class="loading-text">Loading...</div>
+    </div>
+    <canvas id="game-container"></canvas>
+
+    <div class="top-hud">
+        <div class="mission-title">Current job</div>
+        <div class="mission-desc" id="mission-desc">Clear the rubble from the highway and load it into the blue truck.</div>
+        <div class="mission-status" id="job-status-val">SCOOP DIRT (0/3)</div>
+    </div>
+
+    <div class="left-col">
+        <div class="coins-ui">
+            <div class="coin-icon"></div>
+            <span id="coin-count">0</span>
+        </div>
+        <button class="hud-btn primary" id="shop-btn" aria-label="Upgrades" title="Upgrades"><span class="ico"><svg viewBox="0 0 24 24"><path d="M6 11l6-6 6 6"/><path d="M6 18l6-6 6 6"/></svg></span><span class="lbl">Upgrades</span></button>
+        <button class="hud-btn" id="jobs-btn" aria-label="Job list" title="Job list (J)"><span class="ico"><svg viewBox="0 0 24 24"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg></span><span class="lbl">Jobs</span></button>
+        <div class="util-row">
+            <button class="hud-btn sq" id="restart-btn" aria-label="Restart job" title="Restart (R)"><span class="ico"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.5-5.8"/><path d="M20 3.5V9h-5.5"/></svg></span><span class="lbl">Restart</span></button>
+            <button class="hud-btn sq" id="mute-btn" aria-label="Sound on or off" title="Sound on (M)"><span class="ico"><svg class="i-on" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L13 19V5L7.5 9.5z" fill="currentColor" stroke="none"/><path d="M16 9a4.5 4.5 0 0 1 0 6"/><path d="M18.5 6.5a8 8 0 0 1 0 11"/></svg><svg class="i-off" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L13 19V5L7.5 9.5z" fill="currentColor" stroke="none"/><path d="M16.5 9.5l5 5"/><path d="M21.5 9.5l-5 5"/></svg></span><span class="lbl" id="mute-lbl">Sound on</span></button>
+            <button class="hud-btn sq" id="pause-btn" aria-label="Pause" title="Pause (P)"><span class="ico"><svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none"/></svg></span><span class="lbl">Pause</span></button>
+        </div>
+    </div>
+
+    <div class="right-col">
+        <div class="minimap-container" id="minimap-container">
+            <div class="compass-n">N</div>
+            <div class="compass-s">S</div>
+            <canvas id="minimap-canvas" width="180" height="180"></canvas>
+        </div>
+        <div class="camera-ui">
+            <button class="cam-btn" data-mode="orbit">Orbit</button>
+            <button class="cam-btn" data-mode="chase">Chase</button>
+            <button class="cam-btn" data-mode="cab">Cab</button>
+            <button class="cam-btn active" data-mode="bucket">Bucket</button>
+        </div>
+        <button class="hud-btn sq" id="cam-cycle" aria-label="Change camera" title="Camera (C)"><span class="ico"><svg viewBox="0 0 24 24"><path d="M3.5 8h3.5l1.5-2.5h7L17 8h3.5v11h-17z"/><circle cx="12" cy="13.5" r="3.5"/></svg></span></button>
+    </div>
+
+    <div class="dashboard">
+        <div class="control-card">
+            <div class="title">Drive</div>
+            <div class="key-row">
+                <div class="key" data-mobile="forward">W</div>
+                <div class="key" data-mobile="left">A</div>
+                <div class="key" data-mobile="backward">S</div>
+                <div class="key" data-mobile="right">D</div>
+            </div>
+            <div class="hint desk-only"><span class="key">Space</span> brake</div>
+        </div>
+
+        <div class="dash-right">
+            <div class="control-card">
+                <div class="title">Dig / Dump</div>
+                <div class="key-row">
+                    <div class="key" data-mobile="toggleArm">E</div>
+                    <div class="key" data-mobile="toggleBucket">F</div>
+                </div>
+            </div>
+            <div id="dial-slot"></div>
+        </div>
+    </div>
+
+    <!-- old flat speed box: hidden by CSS, kept because main.js writes the speed to #speed-val -->
+    <div class="speedometer-ui">
+        <div class="speed-readout">
+            <div class="speed-val" id="speed-val">0</div>
+            <div class="speed-unit">km/h</div>
+        </div>
+        <div class="speed-bar-container">
+            <div class="speed-bar" id="speed-bar"></div>
+        </div>
+    </div>
+
+    <div id="shop-overlay">
+        <div class="shop-box">
+            <h1>Vehicle Upgrades</h1>
+            <div class="upgrade-item">
+                <div class="upgrade-info"><h3>Engine Power</h3><p>Increase top speed and acceleration.</p></div>
+                <button class="buy-btn" id="buy-engine-btn">Upgrade (100 Coins)</button>
+            </div>
+            <div class="upgrade-item">
+                <div class="upgrade-info"><h3>Hydraulic Speed</h3><p>Move the arm and bucket faster.</p></div>
+                <button class="buy-btn" id="buy-hydraulic-btn">Upgrade (100 Coins)</button>
+            </div>
+            <div class="upgrade-item">
+                <div class="upgrade-info"><h3>Big Bucket</h3><p>Every load pays a bigger tip: 10, 16, 24, 34 coins.</p></div>
+                <button class="buy-btn" id="buy-bucket-btn">Level 1/4 - 150 coins</button>
+            </div>
+            <div class="shop-rank" id="shop-rank"></div>
+            <button class="close-btn" id="close-shop-btn">Close</button>
+        </div>
+    </div>
+
+    <div id="victory-overlay">
+        <div class="victory-box">
+            <h1>Job complete</h1>
+            <p>Highway cleared! +150 Coins</p>
+            <button class="restart-main-btn" id="victory-replay-btn">Next Job</button>
+        </div>
+    </div>
+
+    <div id="pause-overlay">
+        <div class="pause-box">
+            <h1>Paused</h1>
+            <p>Press P or click Resume.</p>
+            <button class="restart-main-btn" id="resume-btn">Resume</button>
+        </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+
+    <script>
+        (function () {
+            // ---------- speed: smooth the number that main.js writes (the round dial in GameUI.js reads it) ----------
+            var valEl = document.getElementById('speed-val');
+            var barEl = document.getElementById('speed-bar');
+            if (valEl && barEl) {
+                var nodeDesc = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
+                var rawSpeed = 0;
+                if (nodeDesc && nodeDesc.get && nodeDesc.set) {
+                    Object.defineProperty(valEl, 'textContent', {
+                        configurable: true,
+                        get: function () { return nodeDesc.get.call(this); },
+                        set: function (v) { rawSpeed = parseFloat(v) || 0; }
+                    });
+                    nodeDesc.set.call(valEl, '0');
+                } else {
+                    var last = '0';
+                    Object.defineProperty(valEl, 'textContent', {
+                        configurable: true,
+                        get: function () { return last; },
+                        set: function (v) { rawSpeed = parseFloat(v) || 0; last = String(v); }
+                    });
+                }
+                var smooth = 0;
+                var shown = '';
+                var MAX_REF = 42; // highest speed with all engine upgrades (32 + 10)
+                var tick = function () {
+                    requestAnimationFrame(tick);
+                    smooth += (rawSpeed - smooth) * 0.15;
+                    if (Math.abs(rawSpeed - smooth) < 0.05) smooth = rawSpeed;
+                    var txt = String(Math.round(smooth));
+                    if (txt !== shown && nodeDesc && nodeDesc.set) {
+                        nodeDesc.set.call(valEl, txt);
+                        shown = txt;
+                    }
+                    var t = smooth / MAX_REF;
+                    if (t < 0) t = 0;
+                    if (t > 1) t = 1;
+                    barEl.style.setProperty('--spd-w', (t * 100).toFixed(1) + '%');
+                };
+                requestAnimationFrame(tick);
+            }
+
+            // ---------- key caps light up while a real key is held; hint cards fade after the first key (desktop only) ----------
+            var dash = document.querySelector('.dashboard');
+            var coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+            var actionMap = {};
+            document.querySelectorAll('.key[data-mobile]').forEach(function (el) {
+                actionMap[el.dataset.mobile] = el;
+            });
+            var codeToAction = {
+                'KeyW': 'forward', 'ArrowUp': 'forward',
+                'KeyS': 'backward', 'ArrowDown': 'backward',
+                'KeyA': 'left', 'ArrowLeft': 'left',
+                'KeyD': 'right', 'ArrowRight': 'right',
+                'KeyE': 'toggleArm',
+                'KeyF': 'toggleBucket'
+            };
+            var setPressed = function (action, on) {
+                var el = actionMap[action];
+                if (el) el.classList.toggle('is-pressed', on);
+            };
+            window.addEventListener('keydown', function (e) {
+                var a = codeToAction[e.code];
+                if (a) {
+                    setPressed(a, true);
+                    if (dash && !coarse) dash.classList.add('dim');
+                }
+            });
+            window.addEventListener('keyup', function (e) {
+                var a = codeToAction[e.code];
+                if (a) setPressed(a, false);
+            });
+            window.addEventListener('blur', function () {
+                Object.keys(actionMap).forEach(function (a) { setPressed(a, false); });
+            });
+
+            // ---------- buttons must never keep focus (Space = brake, not a click) ----------
+            document.addEventListener('mousedown', function (e) {
+                if (e.target && e.target.closest && e.target.closest('button')) e.preventDefault();
+            });
+            document.addEventListener('click', function (e) {
+                var btn = e.target && e.target.closest ? e.target.closest('button') : null;
+                if (btn) setTimeout(function () { btn.blur(); }, 0);
+            }, true);
+
+            // ---------- Sound, Pause, Resume and Camera buttons send the normal game keys ----------
+            function sendKey(code, key) {
+                var opts = { code: code, key: key, bubbles: true, cancelable: true };
+                document.dispatchEvent(new KeyboardEvent('keydown', opts));
+                document.dispatchEvent(new KeyboardEvent('keyup', opts));
+            }
+            var bind = function (id, code, key) {
+                var el = document.getElementById(id);
+                if (el) el.addEventListener('click', function () { sendKey(code, key); });
+            };
+            bind('mute-btn', 'KeyM', 'm');
+            bind('pause-btn', 'KeyP', 'p');
+            bind('resume-btn', 'KeyP', 'p');
+            bind('cam-cycle', 'KeyC', 'c');
+
+            // ---------- Sound button follows the real mute state (main.js sends bh-mute) ----------
+            var muteBtn = document.getElementById('mute-btn');
+            var muteLbl = document.getElementById('mute-lbl');
+            window.addEventListener('bh-mute', function (e) {
+                var m = !!(e && e.detail);
+                if (muteBtn) {
+                    muteBtn.classList.toggle('muted', m);
+                    muteBtn.title = m ? 'Sound off (M)' : 'Sound on (M)';
+                }
+                if (muteLbl) muteLbl.textContent = m ? 'Sound off' : 'Sound on';
+            });
+        })();
+    </script>
+</body>
+</html>

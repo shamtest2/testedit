@@ -1,0 +1,2301 @@
+diff --git a/README.md b/README.md
+index 7e58125..0cc818f 100644
+--- a/README.md
++++ b/README.md
+@@ -1 +1,34 @@
+-# gameprotype
+\ No newline at end of file
++# TerraForm 3D (backhoe loader simulator for CrazyGames)
++
++A three.js + Rapier browser game. Six jobs, six different building sites.
++
++## Run it
++
++```bash
++npm install
++npm run dev      # http://localhost:5173
++npm run build    # production build in dist/
++```
++
++## Controls
++
++| Key | Action |
++|---|---|
++| W A S D / arrows | drive |
++| Space | brake |
++| E | raise / lower the arm |
++| F | scoop or dump (one action button) |
++| C | change camera |
++| R | restart the job |
++| J | job list |
++| P | pause |
++| M | sound on / off |
++| ` | debug overlay (dev build) |
++
++Key bindings use physical key positions, so AZERTY keyboards work without changing anything.
++
++## Docs
++
++- `src/docs/STATE.md` - what is done, what is next
++- `src/docs/LEVELS.md` - the six sites and how to add a seventh
++- `src/docs/CONTINUE.md` - the full handoff document
+diff --git a/index.html b/index.html
+index 62d884a..5274939 100644
+--- a/index.html
++++ b/index.html
+@@ -343,6 +343,15 @@
+             .desk-only { display: none !important; }
+         }
+ 
++        .shop-rank {
++            margin: 14px 0 4px;
++            font-size: 13px;
++            font-weight: 700;
++            color: #fbbf24;
++            text-align: center;
++            letter-spacing: 0.3px;
++        }
++
+         @media (max-width: 560px) {
+             :root { --key: 44px; --mm: 80px; }
+             .dash-right { flex-direction: column; align-items: flex-end; gap: 8px; }
+@@ -372,6 +381,7 @@
+             <span id="coin-count">0</span>
+         </div>
+         <button class="hud-btn primary" id="shop-btn" aria-label="Upgrades" title="Upgrades"><span class="ico"><svg viewBox="0 0 24 24"><path d="M6 11l6-6 6 6"/><path d="M6 18l6-6 6 6"/></svg></span><span class="lbl">Upgrades</span></button>
++        <button class="hud-btn" id="jobs-btn" aria-label="Job list" title="Job list (J)"><span class="ico"><svg viewBox="0 0 24 24"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg></span><span class="lbl">Jobs</span></button>
+         <div class="util-row">
+             <button class="hud-btn sq" id="restart-btn" aria-label="Restart job" title="Restart (R)"><span class="ico"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.5-5.8"/><path d="M20 3.5V9h-5.5"/></svg></span><span class="lbl">Restart</span></button>
+             <button class="hud-btn sq" id="mute-btn" aria-label="Sound on or off" title="Sound on (M)"><span class="ico"><svg class="i-on" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L13 19V5L7.5 9.5z" fill="currentColor" stroke="none"/><path d="M16 9a4.5 4.5 0 0 1 0 6"/><path d="M18.5 6.5a8 8 0 0 1 0 11"/></svg><svg class="i-off" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L13 19V5L7.5 9.5z" fill="currentColor" stroke="none"/><path d="M16.5 9.5l5 5"/><path d="M21.5 9.5l-5 5"/></svg></span><span class="lbl" id="mute-lbl">Sound on</span></button>
+@@ -440,6 +450,11 @@
+                 <div class="upgrade-info"><h3>Hydraulic Speed</h3><p>Move the arm and bucket faster.</p></div>
+                 <button class="buy-btn" id="buy-hydraulic-btn">Upgrade (100 Coins)</button>
+             </div>
++            <div class="upgrade-item">
++                <div class="upgrade-info"><h3>Big Bucket</h3><p>Every load pays a bigger tip: 10, 16, 24, 34 coins.</p></div>
++                <button class="buy-btn" id="buy-bucket-btn">Level 1/4 - 150 coins</button>
++            </div>
++            <div class="shop-rank" id="shop-rank"></div>
+             <button class="close-btn" id="close-shop-btn">Close</button>
+         </div>
+     </div>
+diff --git a/src/core/CrazySDK.js b/src/core/CrazySDK.js
+new file mode 100644
+index 0000000..4b39b54
+--- /dev/null
++++ b/src/core/CrazySDK.js
+@@ -0,0 +1,180 @@
++// TerraForm 3D - CrazyGames SDK bridge (M9)
++// One small class so the rest of the game never touches window.CrazyGames directly.
++//
++// Docs followed:
++//  - sdk/intro          : script tag + await init() before anything else
++//  - sdk/game           : gameplayStart / gameplayStop / happytime / settings.muteAudio
++//  - sdk/video-ads      : requestAd('midgame' | 'rewarded', {adStarted, adError, adFinished})
++//  - requirements/ads   : mute + pause while the ad plays, never punish a failed ad
++//
++// Outside CrazyGames (localhost, GitHub Pages, itch) every call is a silent no-op,
++// so the same build runs everywhere. Force it on with ?sdk=1, force it off with ?nosdk=1.
++
++const SDK_URL = 'https://sdk.crazygames.com/crazygames-sdk-v3.js';
++const MIDGAME_GAP = 190000; // the portal refuses midgame ads more often than every ~3 min
++
++function onCrazyGames() {
++  try {
++    const h = location.hostname;
++    if (h === 'localhost' || h === '127.0.0.1' || h === '') return false;
++    return /(^|\.)crazygames\.(com|co\.uk|de|fr|es|it|pl|pt|br|ru|jp|kr|cn|nl|se|tr|ar|mx|com\.br)$/.test(h)
++      || /crazygames/.test(h);
++  } catch (e) { return false; }
++}
++
++export default class Portal {
++  constructor() {
++    this.sdk = null;
++    this.ready = false;
++    this.crazy = false;
++    this._gameplay = false;
++    this._adBusy = false;
++    this._lastAd = 0;
++    this._muteHandler = null;
++    this._pausedByAd = false;
++    const q = new URLSearchParams(location.search);
++    this._force = q.has('sdk');
++    this._off = q.has('nosdk');
++  }
++
++  // -------------------------------------------------------------- lifecycle
++  async init() {
++    if (this._off) { console.log('[portal] disabled by ?nosdk'); return false; }
++    this.crazy = this._force || onCrazyGames();
++    if (!this.crazy) { console.log('[portal] not on CrazyGames - running standalone'); return false; }
++
++    try {
++      await this._loadScript();
++      if (!window.CrazyGames || !window.CrazyGames.SDK) throw new Error('SDK object missing');
++      this.sdk = window.CrazyGames.SDK;
++      await this._withTimeout(this.sdk.init(), 8000, 'init');
++      this.ready = true;
++      console.log('[portal] CrazyGames SDK ready');
++      this._applySettings();
++      try {
++        this.sdk.game.addSettingsChangeListener(() => this._applySettings());
++      } catch (e) { /* older SDK */ }
++      return true;
++    } catch (e) {
++      console.warn('[portal] SDK not available:', e && e.message ? e.message : e);
++      this.ready = false;
++      return false;
++    }
++  }
++
++  _loadScript() {
++    return new Promise((resolve, reject) => {
++      if (window.CrazyGames && window.CrazyGames.SDK) return resolve();
++      const s = document.createElement('script');
++      s.src = SDK_URL;
++      s.async = true;
++      s.onload = () => resolve();
++      s.onerror = () => reject(new Error('could not load ' + SDK_URL));
++      document.head.appendChild(s);
++    });
++  }
++
++  _withTimeout(promise, ms, what) {
++    return Promise.race([
++      Promise.resolve(promise),
++      new Promise((_, rej) => setTimeout(() => rej(new Error(what + ' timed out')), ms))
++    ]);
++  }
++
++  _applySettings() {
++    try {
++      const st = this.sdk.game.settings || {};
++      if (st.muteAudio && typeof this._muteHandler === 'function') this._muteHandler(true);
++    } catch (e) { /* ignore */ }
++  }
++
++  // the game tells us how to mute itself (portal setting has priority over the M key)
++  setMuteHandler(fn) { this._muteHandler = fn; }
++
++  // ----------------------------------------------------------- load/gameplay
++  loadingStart() { this._call('game', 'loadingStart'); }
++  loadingStop() { this._call('game', 'loadingStop'); }
++
++  gameplayStart() {
++    if (this._gameplay) return;
++    this._gameplay = true;
++    this._call('game', 'gameplayStart');
++  }
++
++  gameplayStop() {
++    if (!this._gameplay) return;
++    this._gameplay = false;
++    this._call('game', 'gameplayStop');
++  }
++
++  happytime() { this._call('game', 'happytime'); }
++
++  _call(mod, fn, a, b) {
++    if (!this.ready || !this.sdk) return;
++    try {
++      const m = this.sdk[mod];
++      if (m && typeof m[fn] === 'function') m[fn](a, b);
++    } catch (e) { /* never let telemetry break the game */ }
++  }
++
++  // ------------------------------------------------------------------- ads
++  // Resolves true when an ad finished, false for filled/blocked/skipped/error.
++  requestMidgame(hooks) {
++    hooks = hooks || {};
++    if (!this.ready || !this.sdk) return Promise.resolve(false);
++    if (this._adBusy) return Promise.resolve(false);
++    const now = Date.now();
++    if (this._lastAd && now - this._lastAd < MIDGAME_GAP) return Promise.resolve(false);
++    return this._ad('midgame', hooks).then((ok) => { this._lastAd = Date.now(); return ok; });
++  }
++
++  requestRewarded(hooks) {
++    hooks = hooks || {};
++    if (!this.ready || !this.sdk) return Promise.resolve(false);
++    if (this._adBusy) return Promise.resolve(false);
++    return this._ad('rewarded', hooks);
++  }
++
++  _ad(type, hooks) {
++    return new Promise((resolve) => {
++      let done = false;
++      this._adBusy = true;
++      const finish = (ok) => {
++        if (done) return;
++        done = true;
++        this._adBusy = false;
++        try { if (hooks.onFinish) hooks.onFinish(ok); } catch (e) {}
++        resolve(ok);
++      };
++      const callbacks = {
++        adStarted: () => { try { if (hooks.onStart) hooks.onStart(); } catch (e) {} },
++        adFinished: () => finish(true),
++        adError: (err) => {
++          console.log('[portal] ad ' + type + ' error', err && err.code ? err.code : err);
++          finish(false);
++        }
++      };
++      try {
++        const ad = this.sdk.ad;
++        if (!ad || typeof ad.requestAd !== 'function') { finish(false); return; }
++        ad.requestAd(type, callbacks);
++        // safety net: an ad that never reports back must not freeze the game
++        setTimeout(() => finish(false), 90000);
++      } catch (e) {
++        console.warn('[portal] requestAd failed', e);
++        finish(false);
++      }
++    });
++  }
++
++  banner(on) {
++    if (!this.ready || !this.sdk) return;
++    try {
++      if (on && this.sdk.banner && this.sdk.banner.requestBanner) {
++        this.sdk.banner.requestBanner({ id: 'terraform-banner', width: 320, height: 50 });
++      } else if (!on && this.sdk.banner && this.sdk.banner.requestResponsiveBanner) {
++        this.sdk.banner.requestResponsiveBanner('terraform-banner');
++      }
++    } catch (e) { /* ignore */ }
++  }
++}
+diff --git a/src/core/World.js b/src/core/World.js
+index 2d0bb6b..016e27f 100644
+--- a/src/core/World.js
++++ b/src/core/World.js
+@@ -889,6 +889,7 @@ export class World {
+     patch.position.set(jobX, 0.04, jobZ);
+     patch.receiveShadow = true;
+     this.scene.add(patch);
++    this.jobPatch = patch;           // moved per job by moveJobSite()
+ 
+     // dirt pile: cone shape, highest clods are removed first
+     this.dirtPileGroup = new THREE.Group();
+@@ -953,14 +954,18 @@ export class World {
+     });
+     this.scene.add(this.truckGroup);
+ 
+-    this.buildingData.push({ x: jobX + 15, y: 3, z: jobZ + 4, w: 4, h: 4, d: 4 });
+-    this.buildingData.push({ x: jobX + 15, y: 2, z: jobZ - 1, w: 4.2, h: 2, d: 6 });
++    this._truckData = [
++      { x: jobX + 15, y: 3, z: jobZ + 4, w: 4, h: 4, d: 4, ox: 0, oz: 4 },
++      { x: jobX + 15, y: 2, z: jobZ - 1, w: 4.2, h: 2, d: 6, ox: 0, oz: -1 }
++    ];
++    this._truckData.forEach((d) => this.buildingData.push(d));
+ 
+     // cones
+     const coneMat = new THREE.MeshStandardMaterial({ color: 0xff5500, roughness: 0.8 });
+     const baseMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+     const baseGeo = new THREE.BoxGeometry(1, 0.3, 1);
+     const coneGeo = new THREE.ConeGeometry(0.45, 1.5, 8);
++    this.jobCones = [];
+     for (let i = 0; i < 16; i++) {
+       const angle = (i / 16) * Math.PI * 2;
+       const g = new THREE.Group();
+@@ -972,7 +977,10 @@ export class World {
+       cone.castShadow = true;
+       g.add(cone);
+       g.position.set(jobX + Math.cos(angle) * 12, 0.04, jobZ + Math.sin(angle) * 12);
++      g.userData.ox = Math.cos(angle) * 12;
++      g.userData.oz = Math.sin(angle) * 12;
+       this.scene.add(g);
++      this.jobCones.push(g);
+     }
+   }
+ 
+@@ -1594,7 +1602,43 @@ export class World {
+       const bodyDesc = RAPIER.RigidBodyDesc.fixed().setTranslation(data.x, data.y, data.z);
+       const body = world.createRigidBody(bodyDesc);
+       const colliderDesc = RAPIER.ColliderDesc.cuboid(data.w / 2, data.h / 2, data.d / 2);
+-      world.createCollider(colliderDesc, body);
++      const col = world.createCollider(colliderDesc, body);
++      // the truck is the only building that moves, so keep its colliders
++      if (this._truckData && this._truckData.indexOf(data) >= 0) {
++        if (!this._truckColliders) this._truckColliders = [];
++        this._truckColliders.push({ col: col, data: data });
++      }
+     });
+   }
++
++  // Move the whole job site (pile, dirt patch, cone ring, truck) to a new place.
++  // Used by Jobs/SiteSystem so every job really happens somewhere else.
++  moveJobSite(px, pz, tx, tz) {
++    if (typeof px !== 'number' || typeof pz !== 'number') return;
++    if (typeof tx !== 'number' || typeof tz !== 'number') { tx = px + 15; tz = pz; }
++
++    if (this.dirtPileGroup) this.dirtPileGroup.position.set(px, 0, pz);
++    if (this.jobPatch) this.jobPatch.position.set(px, 0.04, pz);
++    if (this.jobCones) {
++      for (let i = 0; i < this.jobCones.length; i++) {
++        const c = this.jobCones[i];
++        c.position.set(px + c.userData.ox, 0.04, pz + c.userData.oz);
++      }
++    }
++    if (this.truckGroup) this.truckGroup.position.set(tx, 0, tz);
++
++    if (this._truckData) {
++      for (let i = 0; i < this._truckData.length; i++) {
++        const d = this._truckData[i];
++        d.x = tx + d.ox;
++        d.z = tz + d.oz;
++      }
++    }
++    if (this._truckColliders) {
++      for (let i = 0; i < this._truckColliders.length; i++) {
++        const t = this._truckColliders[i];
++        try { t.col.setTranslation({ x: t.data.x, y: t.data.y, z: t.data.z }, true); } catch (e) {}
++      }
++    }
++  }
+ }
+diff --git a/src/docs/CONTINUE.md b/src/docs/CONTINUE.md
+index ee8d213..29cffec 100644
+--- a/src/docs/CONTINUE.md
++++ b/src/docs/CONTINUE.md
+@@ -430,4 +430,5 @@ ask for ONE file at a time). Start with the short first reply described in secti
+ - NEXT: user tests M4e (normal + 800x450) then Save to GitHub. Then M7a: real jobs and levels (Jobs.js).
+ - 2026-11-03 M4e applied (dial v3, smaller mission card); user said the dial is OK (no screenshot). Backup 2026-11-03T16-25-27-581Z-vhc.
+ - 2026-11-03 M7a part 1 delivered: NEW src/gameplay/Jobs.js (about 560 lines), NOT wired yet. Exports JOBS (6 jobs, theme City Rescue), RANKS, UPGRADES (levels 1..4, prices 100/250/500, 100/250/500, 150/300/600), TIPS (bucket tip per load 10/16/24/34), DAILY (7-day bonus), START (garage start pose), rankInfo, tipFor, upgradeCost, class JobSystem (start, update, addLoad, complete, addTime, lockReason, nextId, dailyStatus, claimDaily, layout/siteFor = finds free ground for jobs 2-6 using World.buildingData, job 1 keeps the old site), class JobPanels (briefing, showResult, showFail, showPicker). Own save key terraform_jobs_v1. Coins stay in main.js saveData.coins. NEXT: user sends src/main.js, then part 2 wires it (replace JobManager, MAX_LOADS, 150 coins, restartJob positions, minimap target, move pile and truck per job, check vehicle.pilePos and truckPos cache, env per job). Need to check pile and truck colliders in World.js createJobSite before moving them.
++- 2026-11-05 M8 delivered (THIS IS THE BIG ONE, read STATE.md and LEVELS.md too). Jobs.js is now wired into main.js: real loads, time, reward, stars, XP, ranks, tips, daily bonus, job picker, briefing, result window, fail window with a REWARDED ad for +60 s. JobManager is no longer imported. NEW src/gameplay/SiteSystem.js builds six different venues (highway / park / bridge / night depot / storm zone / skyline construction) with own ground texture, structures, props, lights, rain and physics colliders; everything is disposed on job change. NEW src/core/CrazySDK.js wraps the portal (init, loadingStart/Stop, gameplayStart/Stop, happytime, midgame ad at Next, rewarded ad on fail, muteAudio). World.js got moveJobSite() plus references to the dirt patch, the cone ring and the truck colliders, so a job site can really move. main.js got applyVenue() (sky shader colours, sun, hemi, fog colour+density, exposure per job), the minimap now points at the real pile and marks the truck, the shop has a Big Bucket upgrade and a rank line, index.html has a Jobs button, and Guidance has a Skip tutorial button. Verified with npm run build, a headless venue test (6 venues, 43-83 drawables, 100 colliders created and all removed) and a headless job test (3 stars, 195 coins, 220 XP, unlock job 2). The site finder was run against the real World data: all six sites found in 23 ms. NOTE: the old files (JobManager.js, LevelSystem.js, AudioManager.js, SoundFX.js, Sfx2.js, DigSound.js, Music.js) are unused but still on disk - delete them at the very end, after the user has played the six sites.
+ SESSION LOG END MARKER (do not remove this line)
+diff --git a/src/docs/LEVELS.md b/src/docs/LEVELS.md
+new file mode 100644
+index 0000000..2654b65
+--- /dev/null
++++ b/src/docs/LEVELS.md
+@@ -0,0 +1,112 @@
++# LEVELS - the six sites (M8)
++
++Every job now happens in a **different place in the city and looks different**.
++This file explains what was built, where it is, and how to add a seventh site.
++
++The two files that make it work:
++
++| File | Job |
++|---|---|
++| `src/gameplay/Jobs.js` | job table (loads, time, reward, story), economy, ranks, daily bonus, star rating, site finder |
++| `src/gameplay/SiteSystem.js` | builds the 3D venue of a job: ground, structures, props, lights, weather, colliders |
++
++`src/gameplay/JobManager.js` and `src/gameplay/LevelSystem.js` are **old** and no longer used.
++They can be deleted in the final clean-up.
++
++---
++
++## 1. The six jobs
++
++| # | Job | Venue | Loads | Time | Reward | Sky / mood |
++|---|---|---|---|---|---|---|
++| 1 | Clear the Highway | Harbour Highway | 3 | 3:00 | 150 | clear blue day |
++| 2 | Park Clean-up | Riverside Park | 4 | 3:30 | 220 | bright day, green |
++| 3 | Bridge Repair | Old Iron Bridge | 5 | 4:30 | 300 | blue-grey, hazy |
++| 4 | Night Shift | Night Shift Depot | 5 | 4:10 | 380 | night, floodlights |
++| 5 | Storm Rescue | Storm Rescue Zone | 6 | 5:20 | 480 | storm, rain, thick fog |
++| 6 | Skyline Foundation | Skyline Foundation | 8 | 7:30 | 600 | golden morning |
++
++Job 6 also needs **Engine level 2**. Every job after the first needs the one before it finished.
++Rewards: first clear = 100% of the reward, replay = 40%. Stars add 0 / 15 / 30 %.
++Tips per load come from the Big Bucket upgrade: 10 / 16 / 24 / 34 coins.
++
++## 2. What you see at each site
++
++**1 - Harbour Highway** (default site, 0 / -120)
++Closed lanes with painted markings, jersey barriers both sides, a real `ROAD CLOSED` gantry
++sign over the road, guardrail, traffic drums with reflective bands, and a broken-down red
++car with flashing hazard lights.
++
++**2 - Riverside Park**
++Grass ground, a pond with a stone rim, 14 trees, two long hedges, three wooden benches,
++two glowing park lamps, a gravel path, a low fence and a landslide scar with a rubble fan.
++
++**3 - Old Iron Bridge**
++A canal with water under a raised steel deck, railings with X bracing on both sides, truss
++arches, expansion joints, orange safety netting, a scaffolding tower and warning flags that
++move in the wind.
++
++**4 - Night Shift Depot**
++Two 13 m floodlight masts with real spotlights on the work pad, a flickering `NIGHT CREW`
++neon sign, a generator trailer, a parked dump truck with tail lights, glow lamps along the
++fence line and hazard chevrons painted on the ground.
++
++**5 - Storm Rescue Zone**
++1400 animated rain drops, six mirror-like puddles, a collapsed retaining wall with bent
++rebar, a sandbag line, a rescue van with a flashing blue beacon, warning tape in the wind
++and thick grey fog.
++
++**6 - Skyline Foundation**
++A 34 m tower crane with a swinging hook, a foundation pit with formwork walls and a rebar
++grid, a half-built concrete tower with floor slabs and column stubs, scaffolding, a cement
++mixer, a portacabin with a lit window and pallets of blocks.
++
++Every site also gets: its own ground texture, an apron ring, a name board at the entrance,
++cones on the approach lanes, marker posts, scattered spoil, a fence run, a site office
++container, fuel drums, a work light, and a painted truck pad with arrows.
++
++## 3. Where the sites are
++
++`Jobs.js` searches the real city for free ground for each job (it reads the same building
++data the physics uses). With the current city the six sites are:
++
++| Job | Pile (x, z) | Truck (x, z) |
++|---|---|---|
++| 1 | 0, -120 | 15, -120 |
++| 2 | 186, -2 | 186, -20 |
++| 3 | -190, -2 | -214, -2 |
++| 4 | -2, 134 | 18, 134 |
++| 5 | -54, -214 | -54, -188 |
++| 6 | 266, -34 | 266, -4 |
++
++The finder runs once per session (about 25 ms) and never puts a site on a road, inside a
++building, or on top of another site. If it cannot find free ground it falls back to the
++highway site, so a job can never break.
++
++`World.moveJobSite(pileX, pileZ, truckX, truckZ)` moves the dirt pile, the dirt patch, the
++cone ring and the blue truck, and it also moves the truck's physics collider so you can not
++drive through it.
++
++## 4. Sky, sun and fog per site
++
++`SiteSystem.js` exports `VENUES`. Each entry sets the sky shader (top / bottom / sun colour
++and sun direction), the sun light, the hemisphere light, the fog colour and density, and the
++tone-mapping exposure. `main.js` applies it in `applyVenue(job)` every time a job starts.
++Fog must be changed by editing `scene.fog.color` / `scene.fog.density` because `World.js`
++locks the `scene.fog` property on purpose.
++
++## 5. How to add site number 7
++
++1. Add a job to `JOBS` in `src/gameplay/Jobs.js` (`site: { bearing, dist, spread, gap }`).
++2. Add a `VENUES[7]` entry in `src/gameplay/SiteSystem.js` with `key: 'quarry'` (any new name).
++3. Write `_venue_quarry()` inside the `SiteSystem` class. Everything is built in local
++   space: the pile is at `0, 0, 0` and local `+Z` points back toward the garage.
++   Use the helpers `_box`, `_cyl`, `_inst`, `_std`, `_board`, `_collider`, `_sign`.
++4. Nothing else needs to change - `build()` finds `_venue_<key>` by name.
++
++Rules kept by every venue (so the game stays playable):
++- keep the area around `0,0` (the pile) and around `info.localTruck` (the truck) free,
++- never block local `+Z` (that is the way in),
++- add `_collider(...)` for anything the player can crash into,
++- use `_inst` for anything repeated more than four times,
++- everything is disposed automatically, so no `dispose()` code is needed in a venue.
+diff --git a/src/docs/STATE.md b/src/docs/STATE.md
+index 178464c..440559a 100644
+--- a/src/docs/STATE.md
++++ b/src/docs/STATE.md
+@@ -1,26 +1,56 @@
+ # STATE (live status)
+ 
+-## Done and saved on GitHub (branch clean-v1)
+-M0, M1, M2 audio, M3a to M3e, top speed 32/14 plus CONTINUE.md, M4a to M4d (last commit 5072948).
++## Saved on GitHub (branch clean-v1)
++M0, M1, M2 audio, M3a to M3e, M4a to M4d, M4e dial v3, M7a part 1 (Jobs.js logic).
+ 
+-## Applied, not yet saved
+-- M4e dial v3 and smaller mission card (user says OK, no screenshot).
+-- M7a part 1: new file src/gameplay/Jobs.js (job table, economy, ranks, daily bonus, site finder, result/fail/picker windows). NOT wired into main.js yet, so no visible change.
++## M8 - DONE IN THIS CHANGE (the big one)
++The game is no longer one highway repeated. It is a real level system now.
+ 
+-## Next
+-1. User clicks Check project, then Save to GitHub.
+-2. User sends src/main.js (ONE file). M7a part 2 wires Jobs.js into main.js (real jobs, real loads, rewards, result window, job picker, site per job).
+-3. M7b shop with level pips, Bucket upgrade, daily bonus button.
+-4. M5 input, M6 SDK and optional ads (user pastes SDK pages one at a time), M8 polish, M9 submission.
++1. **Jobs are wired into the game.** `Jobs.js` is live in `main.js`: real load counts,
++   per-job time limit, per-job reward, stars, XP, ranks, tips per load, daily bonus,
++   job picker, briefing card, result window and fail window with "watch ad for +60 s".
++   The old `JobManager` is gone from `main.js` (file still on disk, unused).
++2. **Six different sites.** New file `src/gameplay/SiteSystem.js` (about 1000 lines)
++   builds a completely different venue for every job: highway / park / bridge / night
++   depot / storm zone / skyline construction. See `LEVELS.md`.
++3. **Per-site sky, sun, fog and exposure.** `applyVenue()` in `main.js` moves the sky
++   shader, sun light, hemisphere light, fog colour, fog density and tone mapping.
++4. **Real movement of the job site.** New `World.moveJobSite()` moves the pile, the dirt
++   patch, the cone ring and the blue truck (including its physics collider).
++5. **Minimap fixed.** It now points at the real pile and shows the truck marker, instead
++   of the old hardcoded 0,-100.
++6. **CrazyGames SDK.** New file `src/core/CrazySDK.js`: `init`, `loadingStart/Stop`,
++   `gameplayStart/Stop`, `happytime`, midgame ad on "Next", rewarded ad on fail,
++   `muteAudio` portal setting. Silent no-op outside the portal (`?sdk=1` forces it on,
++   `?nosdk=1` forces it off).
++7. **Shop upgraded.** Engine / Hydraulics / Big Bucket with 4 levels each, prices from
++   `Jobs.UPGRADES`, plus the rank line. Bucket level changes the tip per load.
++8. **Onboarding is skippable** (CrazyGames quality guideline): a real "Skip tutorial"
++   button on the tutorial card.
++9. **Jobs HUD button** (`Jobs`, key `J`) opens the job picker from the game.
+ 
+-## Open issues
+-- Mission card text is still always Clear the Highway until part 2.
+-- MAX_LOADS = 3 and 150 coins are still hardcoded in main.js until part 2.
+-- Max speed seen 36 instead of 42, cause unknown (check Vehicle.js governor).
+-- Night, fog and dusk looks need World.js sky and fog access (env data is ready in Jobs.js).
+-- Shop is plain, no Bucket upgrade yet. Engine and hydraulic max level is 3 in main.js, Jobs.js allows 4.
+-- Similar traffic cars. Plain driver seat, garage and yard.
+-- Loud engine. The reverse beeper probably never fires.
+-- Double camera button binding. Empty setCollidables arrays. Fog lock in World.js.
+-- Old files to delete at the end. Internal jcb names in Vehicle.js. Vite warnings.
+-- Red webextension.js console line is a Brave extension, not the game.
++## Verified
++- `npm run build` passes (33 modules).
++- Headless smoke test: all 6 venues build 43-83 drawables each, night/storm add real
++  lights, 100 physics bodies created and all removed on site change (no leaks).
++- Headless logic test: job 1 completes with 3 stars, 195 coins + 30 tips + 220 XP,
++  unlocks job 2; fail path + "add 60 s" now really gives 60 seconds.
++- Site finder against the real `World.buildingData` (491 boxes, 978 props): all six
++  sites found in 23 ms, no site on a road or inside a building.
++
++## Next (in order)
++1. Watch the six sites in the browser and note anything ugly (Screenshots help).
++2. M7b: the shop window should use the same look as the new job windows.
++3. M6: banners + adblock handling (needs the CrazyGames banner page from the user).
++4. M8 polish: driver seat, garage and yard detail, different traffic cars.
++5. Final clean-up: delete `JobManager.js`, `LevelSystem.js`, `AudioManager.js`,
++   `SoundFX.js`, `Sfx2.js`, `DigSound.js`, `Music.js` (all replaced or unused), and the
++   `jcb` names inside `Vehicle.js`.
++
++## Open issues (known)
++- Max speed seen 36 instead of 42 (Vehicle.js governor). Not touched in M8.
++- Loud engine; reverse beeper probably never fires.
++- Double camera button binding; empty `setCollidables` arrays in some paths.
++- Traffic cars look similar.
++- `scene.fog` is locked by `World.js` - always change `scene.fog.color/density`, never
++  assign a new fog object.
+diff --git a/src/gameplay/Guidance.js b/src/gameplay/Guidance.js
+index 59716fa..6b14e75 100644
+--- a/src/gameplay/Guidance.js
++++ b/src/gameplay/Guidance.js
+@@ -90,6 +90,22 @@ export default class Guidance {
+         transition: opacity 0.25s ease;
+       }
+       .guid-card.show { opacity: 1; }
++      .guid-card .guid-skip {
++        display: inline-block;
++        margin-top: 8px;
++        padding: 6px 14px;
++        min-height: 32px;
++        border-radius: 9px;
++        border: 1px solid rgba(255,255,255,0.32);
++        background: rgba(255,255,255,0.12);
++        color: #fff;
++        font-family: inherit;
++        font-size: 12px;
++        font-weight: 700;
++        letter-spacing: 0.4px;
++        cursor: pointer;
++      }
++      .guid-card .guid-skip:hover { background: rgba(255,255,255,0.22); }
+       .guid-card .guid-step {
+         display: block;
+         margin-top: 4px;
+@@ -161,6 +177,17 @@ export default class Guidance {
+     s.className = 'guid-step';
+     s.textContent = 'Step ' + num + ' / ' + total + ' — tap to continue';
+     this._card.appendChild(s);
++
++    // onboarding must be skippable (CrazyGames quality guideline)
++    const skip = document.createElement('button');
++    skip.type = 'button';
++    skip.className = 'guid-skip';
++    skip.textContent = 'Skip tutorial';
++    skip.addEventListener('click', (ev) => {
++      if (ev) { ev.preventDefault(); ev.stopPropagation(); }
++      this._endTutorial();
++    });
++    this._card.appendChild(skip);
+   }
+ 
+   nextTutorialStep() {
+diff --git a/src/gameplay/Jobs.js b/src/gameplay/Jobs.js
+index 35928eb..55c6457 100644
+--- a/src/gameplay/Jobs.js
++++ b/src/gameplay/Jobs.js
+@@ -312,7 +312,11 @@ export class JobSystem {
+     const s = this.state;
+     s.extra += sec;
+     if (s.failed && !s.done) { s.failed = false; s.running = true; this._sec = -1; }
+-    s.timeLeft = Math.max(0, this.current.time + s.extra - s.elapsed);
++    // the player must really get `sec` seconds, even if elapsed passed the limit
++    const limit = this.current.time + s.extra;
++    if (s.elapsed > limit - sec) s.elapsed = Math.max(0, limit - sec);
++    s.timeLeft = Math.max(0, limit - s.elapsed);
++    if (this.onTick) this.onTick(Math.ceil(s.timeLeft));
+   }
+ 
+   setPhase(p) { this.state.phase = p === 'dump' ? 'dump' : 'scoop'; }
+diff --git a/src/gameplay/SiteSystem.js b/src/gameplay/SiteSystem.js
+new file mode 100644
+index 0000000..9ccf213
+--- /dev/null
++++ b/src/gameplay/SiteSystem.js
+@@ -0,0 +1,1068 @@
++// TerraForm 3D - SiteSystem (M8)
++// Builds a DIFFERENT 3D venue for every job: ground, signature structures, props,
++// lights, weather, colliders. Nothing here is shared between jobs, so each level
++// feels like a new location instead of the same highway again.
++//
++// Local space: the dirt pile is at (0,0,0). Local +Z points from the pile back
++// toward the garage (the approach side), so +Z stays open for driving in/out.
++//
++// Everything is disposed in dispose() - geometries, materials, textures and the
++// Rapier bodies. build() always calls dispose() first, so switching jobs can not
++// leak GPU memory. No other module needs to know how a venue is made.
++
++import * as THREE from 'three';
++
++const TAU = Math.PI * 2;
++
++// ---------------------------------------------------------------- venue table
++// One entry per job id. Colors are also used by main.js to move the sky, the
++// sun, the hemisphere light and the fog when the job starts.
++export const VENUES = {
++  1: {
++    key: 'highway', name: 'Harbour Highway', badge: 'STORM CLEAN-UP',
++    sky: { top: 0x2f77c8, bottom: 0xcfe2f3, sun: 0xfff2cc, sunDir: [100, 200, 100] },
++    fog: { color: 0xcfe2f3, density: 0.0011 },
++    sun: { color: 0xfff5e6, intensity: 2.0 },
++    hemi: { intensity: 0.9, sky: 0xffffff, ground: 0x778866 },
++    exposure: 1.0, ground: 'asphalt'
++  },
++  2: {
++    key: 'park', name: 'Riverside Park', badge: 'LANDSLIDE',
++    sky: { top: 0x3b8ad9, bottom: 0xd9ecf7, sun: 0xfff4d0, sunDir: [-120, 160, 90] },
++    fog: { color: 0xd9ecf7, density: 0.0013 },
++    sun: { color: 0xfff6e2, intensity: 1.9 },
++    hemi: { intensity: 0.95, sky: 0xe8f4ff, ground: 0x5b7a44 },
++    exposure: 1.0, ground: 'grass'
++  },
++  3: {
++    key: 'bridge', name: 'Old Iron Bridge', badge: 'BUSY STREETS',
++    sky: { top: 0x3a6ea8, bottom: 0xdfe8ef, sun: 0xffe0b0, sunDir: [150, 90, -80] },
++    fog: { color: 0xdfe8ef, density: 0.0016 },
++    sun: { color: 0xffe6c0, intensity: 1.7 },
++    hemi: { intensity: 0.85, sky: 0xdfeaf6, ground: 0x6b6f74 },
++    exposure: 1.02, ground: 'concrete'
++  },
++  4: {
++    key: 'night', name: 'Night Shift Depot', badge: 'DARK CITY',
++    sky: { top: 0x03060d, bottom: 0x111a2e, sun: 0x9fb4e0, sunDir: [-60, 120, -40] },
++    fog: { color: 0x060a14, density: 0.0026 },
++    sun: { color: 0x8fa4d6, intensity: 0.22 },
++    hemi: { intensity: 0.3, sky: 0x33415e, ground: 0x0a0e14 },
++    exposure: 1.18, ground: 'asphaltNight'
++  },
++  5: {
++    key: 'storm', name: 'Storm Rescue Zone', badge: 'HEAVY FOG',
++    sky: { top: 0x3b4654, bottom: 0x8e99a4, sun: 0xbfc9d2, sunDir: [40, 70, 40] },
++    fog: { color: 0x8e9aa6, density: 0.0055 },
++    sun: { color: 0x9aa7b4, intensity: 0.5 },
++    hemi: { intensity: 0.62, sky: 0x9aa7b4, ground: 0x3d4650 },
++    exposure: 0.96, ground: 'wet'
++  },
++  6: {
++    key: 'skyline', name: 'Skyline Foundation', badge: 'BIG BUILD',
++    sky: { top: 0x2b6cb8, bottom: 0xffd9b0, sun: 0xffd2a0, sunDir: [-90, 60, 120] },
++    fog: { color: 0xf0d9bd, density: 0.0017 },
++    sun: { color: 0xffd9b4, intensity: 1.85 },
++    hemi: { intensity: 0.8, sky: 0xffe9d2, ground: 0x6a6152 },
++    exposure: 1.03, ground: 'concrete'
++  }
++};
++
++export function venueFor(jobId) {
++  return VENUES[jobId] || VENUES[1];
++}
++
++// ------------------------------------------------------------ texture helpers
++function canvas2d(w, h) {
++  const c = document.createElement('canvas');
++  c.width = w; c.height = h;
++  return { c, x: c.getContext('2d') };
++}
++
++function tex(c, rep) {
++  const t = new THREE.CanvasTexture(c);
++  t.colorSpace = THREE.SRGBColorSpace;
++  t.wrapS = t.wrapT = THREE.RepeatWrapping;
++  if (rep) t.repeat.set(rep, rep);
++  t.anisotropy = 4;
++  t.needsUpdate = true;
++  return t;
++}
++
++function kindTex(kind) {
++  const { c, x: g } = canvas2d(512, 512);
++  if (kind === 'grass') {
++    g.fillStyle = '#4d7238'; g.fillRect(0, 0, 512, 512);
++    for (let i = 0; i < 9000; i++) {
++      const v = 40 + Math.random() * 90;
++      g.fillStyle = 'rgba(' + Math.floor(v * 0.6) + ',' + Math.floor(v + 40) + ',' + Math.floor(v * 0.45) + ',0.5)';
++      g.fillRect(Math.random() * 512, Math.random() * 512, 2 + Math.random() * 3, 2 + Math.random() * 4);
++    }
++  } else if (kind === 'wet') {
++    g.fillStyle = '#3c444c'; g.fillRect(0, 0, 512, 512);
++    for (let i = 0; i < 2600; i++) {
++      const v = 40 + Math.random() * 70;
++      g.fillStyle = 'rgba(' + v + ',' + (v + 6) + ',' + (v + 12) + ',0.5)';
++      g.fillRect(Math.random() * 512, Math.random() * 512, 2 + Math.random() * 4, 2 + Math.random() * 4);
++    }
++    for (let i = 0; i < 40; i++) {
++      g.strokeStyle = 'rgba(150,170,190,0.10)';
++      g.lineWidth = 1 + Math.random() * 2;
++      g.beginPath();
++      const px = Math.random() * 512, py = Math.random() * 512;
++      g.moveTo(px, py);
++      g.lineTo(px + (Math.random() - 0.5) * 90, py + (Math.random() - 0.5) * 90);
++      g.stroke();
++    }
++  } else if (kind === 'concrete' || kind === 'asphalt' || kind === 'asphaltNight') {
++    const base = kind === 'concrete' ? '#9a9a93' : kind === 'asphaltNight' ? '#22262c' : '#3a3d42';
++    g.fillStyle = base; g.fillRect(0, 0, 512, 512);
++    for (let i = 0; i < 8000; i++) {
++      const v = kind === 'concrete' ? 100 + Math.random() * 70 : 30 + Math.random() * 55;
++      g.fillStyle = 'rgba(' + v + ',' + v + ',' + Math.floor(v * 0.98) + ',0.35)';
++      g.fillRect(Math.random() * 512, Math.random() * 512, 2 + Math.random() * 3, 2 + Math.random() * 3);
++    }
++    if (kind === 'concrete') {
++      g.strokeStyle = 'rgba(70,70,68,0.55)'; g.lineWidth = 2;
++      for (let i = 0; i <= 512; i += 128) {
++        g.beginPath(); g.moveTo(i, 0); g.lineTo(i, 512); g.stroke();
++        g.beginPath(); g.moveTo(0, i); g.lineTo(512, i); g.stroke();
++      }
++    }
++    if (kind === 'asphalt') {
++      g.strokeStyle = 'rgba(20,20,22,0.5)'; g.lineWidth = 2;
++      for (let i = 0; i < 14; i++) {
++        g.beginPath();
++        let px = Math.random() * 512, py = Math.random() * 512;
++        g.moveTo(px, py);
++        for (let k = 0; k < 5; k++) {
++          px += (Math.random() - 0.5) * 90; py += (Math.random() - 0.5) * 90;
++          g.lineTo(px, py);
++        }
++        g.stroke();
++      }
++    }
++  } else {
++    g.fillStyle = '#8a6a48'; g.fillRect(0, 0, 512, 512);
++    for (let i = 0; i < 7000; i++) {
++      const v = 60 + Math.random() * 150;
++      g.fillStyle = 'rgba(' + v + ',' + Math.floor(v * 0.72) + ',' + Math.floor(v * 0.48) + ',0.4)';
++      g.fillRect(Math.random() * 512, Math.random() * 512, 2 + Math.random() * 4, 2 + Math.random() * 4);
++    }
++  }
++  return tex(c, 3);
++}
++
++// ============================================================== SiteSystem ===
++export default class SiteSystem {
++  constructor(scene, world) {
++    this.scene = scene;
++    this.world = world;
++    this.root = new THREE.Group();
++    this.root.name = 'site-root';
++    this.scene.add(this.root);
++
++    this._geo = [];
++    this._mat = [];
++    this._tex = [];
++    this._bodies = [];
++    this._tickers = [];
++    this._lights = [];
++    this._colliders = [];
++    this._time = 0;
++    this.info = null;
++    this.venue = null;
++  }
++
++  // --------------------------------------------------------------- utilities
++  _track(obj) {
++    if (obj.isBufferGeometry) this._geo.push(obj);
++    else if (obj.isMaterial) this._mat.push(obj);
++    else if (obj.isTexture) this._tex.push(obj);
++    return obj;
++  }
++
++  _std(color, opts) {
++    const m = new THREE.MeshStandardMaterial(Object.assign({ color: color, roughness: 0.85, metalness: 0.0 }, opts || {}));
++    return this._track(m);
++  }
++
++  _box(w, h, d, mat, x, y, z, ry, cast) {
++    const g = this._track(new THREE.BoxGeometry(w, h, d));
++    const m = new THREE.Mesh(g, mat);
++    m.position.set(x, y, z);
++    if (ry) m.rotation.y = ry;
++    m.castShadow = cast !== false;
++    m.receiveShadow = true;
++    this.root.add(m);
++    return m;
++  }
++
++  _cyl(rt, rb, h, seg, mat, x, y, z, ry) {
++    const g = this._track(new THREE.CylinderGeometry(rt, rb, h, seg));
++    const m = new THREE.Mesh(g, mat);
++    m.position.set(x, y, z);
++    if (ry) m.rotation.y = ry;
++    m.castShadow = true;
++    m.receiveShadow = true;
++    this.root.add(m);
++    return m;
++  }
++
++  _inst(geo, mat, list, cast) {
++    if (!list || !list.length) return null;
++    const im = new THREE.InstancedMesh(this._track(geo), mat, list.length);
++    const mtx = new THREE.Matrix4();
++    const q = new THREE.Quaternion();
++    const e = new THREE.Euler();
++    const p = new THREE.Vector3();
++    const s = new THREE.Vector3();
++    for (let i = 0; i < list.length; i++) {
++      const t = list[i];
++      e.set(t.rx || 0, t.ry || 0, t.rz || 0);
++      q.setFromEuler(e);
++      p.set(t.x, t.y, t.z);
++      const sc = t.s === undefined ? 1 : t.s;
++      s.set(t.sx === undefined ? sc : t.sx, t.sy === undefined ? sc : t.sy, t.sz === undefined ? sc : t.sz);
++      mtx.compose(p, q, s);
++      im.setMatrixAt(i, mtx);
++    }
++    im.instanceMatrix.needsUpdate = true;
++    im.castShadow = cast !== false;
++    im.receiveShadow = true;
++    this.root.add(im);
++    return im;
++  }
++
++  _collider(x, y, z, w, h, d, ry) {
++    this._colliders.push({ x: x, y: y, z: z, w: w, h: h, d: d, ry: ry || 0 });
++  }
++
++  // Sign board with real text - sells "this is a different location".
++  _sign(title, subtitle, bg, fg, w, h) {
++    const W = 512, H = 256;
++    const { c, x: g } = canvas2d(W, H);
++    g.fillStyle = bg || '#f5a623';
++    g.fillRect(0, 0, W, H);
++    g.strokeStyle = 'rgba(0,0,0,0.35)';
++    g.lineWidth = 10;
++    g.strokeRect(6, 6, W - 12, H - 12);
++    g.fillStyle = fg || '#1c1a16';
++    g.textAlign = 'center';
++    g.font = 'bold 64px system-ui, Arial, sans-serif';
++    g.fillText(title || '', W / 2, 108);
++    g.font = 'bold 30px system-ui, Arial, sans-serif';
++    g.fillText(subtitle || '', W / 2, 172);
++    const t = this._track(tex(c));
++    const mat = this._std(0xffffff, { map: t, roughness: 0.7 });
++    const m = this._box(w || 7, h || 3.5, 0.24, mat, 0, 0, 0);
++    return m;
++  }
++
++  _board(title, subtitle, bg, fg, x, y, z, ry, w, h) {
++    const posts = this._std(0x50565e, { metalness: 0.35, roughness: 0.6 });
++    this._box(0.22, y, 0.22, posts, x - (w || 7) * 0.4, y / 2, z, ry);
++    this._box(0.22, y, 0.22, posts, x + (w || 7) * 0.4, y / 2, z, ry);
++    const b = this._sign(title, subtitle, bg, fg, w, h);
++    b.position.set(x, y, z);
++    b.rotation.y = ry || 0;
++    b.castShadow = true;
++    return b;
++  }
++
++  // ---------------------------------------------------------------- ground
++  _ground(kind, radius) {
++    const t = this._track(kindTex(kind));
++    const mat = this._std(0xffffff, {
++      map: t, roughness: kind === 'wet' ? 0.35 : 0.95,
++      metalness: kind === 'wet' || kind === 'asphaltNight' ? 0.25 : 0,
++      polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4
++    });
++    const r = radius || 30;
++    const g = this._track(new THREE.CircleGeometry(r, 56));
++    const m = new THREE.Mesh(g, mat);
++    m.rotation.x = -Math.PI / 2;
++    m.position.y = 0.075;
++    m.receiveShadow = true;
++    this.root.add(m);
++
++    // slightly darker outer apron so the venue reads from a distance
++    const ring = new THREE.Mesh(
++      this._track(new THREE.RingGeometry(r * 0.98, r * 1.42, 48)),
++      this._std(kind === 'grass' ? 0x3f5f2e : 0x33373c, {
++        roughness: 0.98, transparent: true, opacity: 0.55,
++        polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3
++      })
++    );
++    ring.rotation.x = -Math.PI / 2;
++    ring.position.y = 0.07;
++    ring.receiveShadow = true;
++    this.root.add(ring);
++    return m;
++  }
++
++  // ----------------------------------------------------------------- build
++  build(jobId, site, opts) {
++    this.dispose();
++    opts = opts || {};
++    const venue = venueFor(jobId);
++    this.venue = venue;
++
++    const fallbackPile = { x: 0, z: -120 };
++    const useSite = site && site.ok && !site.keep && site.pile && site.truck;
++    const pile = useSite ? { x: site.pile.x, z: site.pile.z } : fallbackPile;
++    const truck = useSite ? { x: site.truck.x, z: site.truck.z } : { x: pile.x + 15, z: pile.z };
++
++    // local +Z looks back toward the garage: open side for driving in and out
++    const yaw = Math.atan2(-pile.x, -pile.z);
++    this.root.position.set(pile.x, 0, pile.z);
++    this.root.rotation.y = yaw;
++
++    const dx = truck.x - pile.x, dz = truck.z - pile.z;
++    const ca = Math.cos(yaw), sa = Math.sin(yaw);
++    const localTruck = { x: ca * dx - sa * dz, z: sa * dx + ca * dz };
++
++    this.info = { jobId: jobId, venue: venue, pile: pile, truck: truck, yaw: yaw, localTruck: localTruck };
++
++    this._ground(venue.ground, venue.key === 'night' ? 26 : 30);
++
++    const fn = this['_venue_' + venue.key];
++    if (typeof fn === 'function') {
++      try { fn.call(this, localTruck); }
++      catch (e) { console.warn('[site] venue ' + venue.key + ' failed', e); }
++    }
++    this._common(localTruck);
++
++    // physics: a fixed body per solid prop, removed again in dispose()
++    if (opts.world && opts.RAPIER && this._colliders.length) {
++      try {
++        const R = opts.RAPIER;
++        for (let i = 0; i < this._colliders.length; i++) {
++          const c = this._colliders[i];
++          const body = opts.world.createRigidBody(
++            R.RigidBodyDesc.fixed().setTranslation(pile.x + c.x, c.y, pile.z + c.z)
++          );
++          // colliders are axis aligned in local space; rotate the offset, keep the box
++          const lx = c.x, lz = c.z;
++          const wx = ca * lx + sa * lz;
++          const wz = -sa * lx + ca * lz;
++          body.setTranslation({ x: pile.x + wx, y: c.y, z: pile.z + wz }, true);
++          const half = [c.w / 2, c.h / 2, c.d / 2];
++          if (c.ry) {
++            const s = Math.abs(Math.sin(c.ry)), co = Math.abs(Math.cos(c.ry));
++            const nw = half[0] * co + half[2] * s;
++            const nd = half[0] * s + half[2] * co;
++            half[0] = nw; half[2] = nd;
++          }
++          opts.world.createCollider(
++            R.ColliderDesc.cuboid(half[0], half[1], half[2]).setFriction(0.9).setRestitution(0),
++            body
++          );
++          this._bodies.push(body);
++        }
++      } catch (e) { console.warn('[site] colliders failed', e); }
++    }
++
++    return this.info;
++  }
++
++  // -------------------------------------------------- shared site furniture
++  _common(truckLocal) {
++    const metal = this._std(0x6e767f, { metalness: 0.5, roughness: 0.5 });
++    const orange = this._std(0xff6a00, { roughness: 0.7 });
++    const white = this._std(0xf2f4f6, { roughness: 0.6 });
++    const dark = this._std(0x24272b, { roughness: 0.9 });
++
++    // cones marking the two approach lanes (never on the truck side)
++    const coneGeo = new THREE.ConeGeometry(0.34, 1.05, 10);
++    const baseGeo = new THREE.BoxGeometry(0.8, 0.09, 0.8);
++    const list = [];
++    const base = [];
++    for (let i = 0; i < 9; i++) {
++      const a = -0.55 + i * 0.14;
++      const r = 19 + (i % 2) * 2.4;
++      list.push({ x: Math.sin(a) * r, y: 0.55, z: Math.cos(a) * r, ry: a });
++      base.push({ x: Math.sin(a) * r, y: 0.045, z: Math.cos(a) * r, ry: a });
++    }
++    this._inst(coneGeo, orange, list);
++    this._inst(baseGeo, dark, base);
++
++    // reflective marker posts around the outer edge
++    const postGeo = new THREE.CylinderGeometry(0.09, 0.09, 1.25, 6);
++    const posts = [];
++    for (let i = 0; i < 16; i++) {
++      const a = (i / 16) * TAU;
++      if (Math.cos(a) > 0.5) continue; // keep the approach clear
++      posts.push({ x: Math.sin(a) * 24, y: 0.62, z: Math.cos(a) * 24 });
++    }
++    this._inst(postGeo, white, posts);
++
++    // scattered spoil clods (fills the pad with detail)
++    const clodGeo = new THREE.DodecahedronGeometry(0.55, 0);
++    const clods = [];
++    for (let i = 0; i < 34; i++) {
++      const a = Math.random() * TAU;
++      const r = 7 + Math.random() * 15;
++      const s = 0.5 + Math.random() * 0.9;
++      clods.push({
++        x: Math.sin(a) * r, y: 0.18 + Math.random() * 0.12, z: Math.cos(a) * r,
++        ry: Math.random() * TAU, rx: Math.random() * 0.6, s: s
++      });
++    }
++    this._inst(clodGeo, this._std(0x6b4a2b, { roughness: 1 }), clods);
++
++    // fence panels on the far side only (keeps the venue readable, not boxed in)
++    const fenceMat = this._std(0xb9c2cc, { metalness: 0.4, roughness: 0.5 });
++    const panelGeo = new THREE.BoxGeometry(3.6, 2.0, 0.09);
++    const panels = [];
++    for (let i = -3; i <= 3; i++) {
++      const a = Math.PI + i * 0.16;
++      panels.push({ x: Math.sin(a) * 25, y: 1.05, z: Math.cos(a) * 25, ry: a });
++    }
++    this._inst(panelGeo, fenceMat, panels);
++    for (let i = 0; i < panels.length; i++) {
++      this._collider(panels[i].x, 1.05, panels[i].z, 3.6, 2.1, 0.4, panels[i].ry);
++    }
++
++    // entrance sign: venue name, always facing the garage
++    this._board(this.venue.name.toUpperCase(), this.venue.badge, '#f5a623', '#20180a', 0, 3.4, 27.5, 0, 8.5, 4.2);
++
++    // a small site office container, offset from the pile
++    const contX = -18, contZ = 15;
++    const cont = this._std(0x2f6f8f, { roughness: 0.65, metalness: 0.2 });
++    this._box(6.2, 2.7, 2.5, cont, contX, 1.45, contZ, 0.22);
++    this._box(6.3, 0.18, 2.6, white, contX, 2.85, contZ, 0.22);
++    const winMat = this._std(0x0e1a24, { emissive: 0x8fd0ff, emissiveIntensity: 0.35, roughness: 0.2, metalness: 0.1 });
++    this._box(1.6, 1.0, 0.08, winMat, contX + 1.1, 1.8, contZ + 1.29, 0.22);
++    this._collider(contX, 1.45, contZ, 6.2, 2.7, 2.5, 0.22);
++
++    // fuel drum + pallet detail near the office
++    this._cyl(0.42, 0.42, 1.1, 12, this._std(0xd94b2b, { roughness: 0.7 }), contX + 4.1, 0.55, contZ + 0.6);
++    this._cyl(0.42, 0.42, 1.1, 12, this._std(0xf2c230, { roughness: 0.7 }), contX + 4.1, 0.55, contZ - 0.9);
++    this._box(1.6, 0.16, 1.2, this._std(0x8a6a48, { roughness: 1 }), contX + 6.3, 0.1, contZ, 0);
++
++    // work light on a tripod, pointing at the pad
++    const tripod = this._std(0x3a3f45, { metalness: 0.4, roughness: 0.6 });
++    this._cyl(0.06, 0.10, 3.0, 8, tripod, 14, 1.5, 9);
++    this._box(1.0, 0.5, 0.35, this._std(0x1a1d21, { roughness: 0.7 }), 14, 3.1, 9);
++    const lamp = this._box(0.86, 0.34, 0.06, this._std(0xfff4d0, { emissive: 0xfff0c0, emissiveIntensity: 1.6 }), 14, 3.1, 9.2);
++    if (this.venue.key === 'night' || this.venue.key === 'storm') {
++      const sp = new THREE.PointLight(0xffe9b0, 9, 34, 2);
++      sp.position.set(14, 3.2, 9.6);
++      this.root.add(sp);
++      this._lights.push(sp);
++      this._tickers.push((dt, t) => { sp.intensity = 8 + Math.sin(t * 6.7) * 0.55; });
++    }
++    void lamp;
++
++    // truck pad marking so the drop-off point is obvious
++    const pad = new THREE.Mesh(
++      this._track(new THREE.PlaneGeometry(11, 15)),
++      this._std(0xf2c230, {
++        transparent: true, opacity: 0.28, roughness: 1,
++        polygonOffset: true, polygonOffsetFactor: -5, polygonOffsetUnits: -5
++      })
++    );
++    pad.rotation.x = -Math.PI / 2;
++    pad.rotation.z = 0;
++    pad.position.set(truckLocal.x, 0.085, truckLocal.z);
++    this.root.add(pad);
++
++    // arrow painted on the ground from the pile toward the truck
++    const arrowMat = this._std(0xf7d34a, {
++      transparent: true, opacity: 0.5, roughness: 1,
++      polygonOffset: true, polygonOffsetFactor: -5, polygonOffsetUnits: -5
++    });
++    const ang = Math.atan2(truckLocal.x, truckLocal.z);
++    const dist = Math.hypot(truckLocal.x, truckLocal.z);
++    for (let i = 1; i <= 3; i++) {
++      const f = i / 4;
++      this._box(0.55, 0.02, 1.5, arrowMat, truckLocal.x * f, 0.09, truckLocal.z * f, ang, false);
++    }
++    void metal;void dist;
++  }
++
++  // =============================================================== venue 1 ===
++  _venue_highway() {
++    const asphalt = this._std(0x2e3236, { roughness: 0.95 });
++    const paint = this._std(0xe8ecef, { roughness: 0.8 });
++    const barrier = this._std(0xd7d9db, { roughness: 0.85 });
++    const steel = this._std(0x8b949e, { metalness: 0.55, roughness: 0.45 });
++
++    // closed highway lanes running left to right behind the pile
++    this._box(64, 0.06, 15, asphalt, 0, 0.04, -20, 0, false);
++    const dash = [];
++    for (let i = -14; i <= 14; i++) dash.push({ x: i * 2.2, y: 0.08, z: -20, sx: 1.1, sy: 0.02, sz: 0.22 });
++    this._inst(new THREE.BoxGeometry(1, 1, 1), paint, dash, false);
++    this._box(64, 0.02, 0.28, paint, 0, 0.08, -26.4, 0, false);
++    this._box(64, 0.02, 0.28, paint, 0, 0.08, -13.6, 0, false);
++
++    // jersey barriers = the classic closed-road look
++    const jb = [];
++    for (let i = -5; i <= 5; i++) {
++      jb.push({ x: i * 4.2, y: 0.55, z: -12.6 });
++      if (i % 2 === 0) jb.push({ x: i * 4.2, y: 0.55, z: -27.4 });
++    }
++    this._inst(new THREE.BoxGeometry(3.9, 1.1, 0.85), barrier, jb);
++    for (let i = 0; i < jb.length; i++) this._collider(jb[i].x, 0.55, jb[i].z, 3.9, 1.1, 0.85, 0);
++
++    // gantry sign over the closed lane
++    this._box(0.5, 7.4, 0.5, steel, -13, 3.7, -12.6);
++    this._box(0.5, 7.4, 0.5, steel, 13, 3.7, -12.6);
++    this._box(26.4, 0.45, 0.5, steel, 0, 7.2, -12.6);
++    this._board('ROAD CLOSED', 'CLEAN-UP CREW AHEAD', '#d63a2a', '#ffffff', 0, 5.6, -12.2, 0, 9.5, 4.6);
++
++    // guardrail along the far edge
++    const rail = [];
++    for (let i = -8; i <= 8; i++) rail.push({ x: i * 2.6, y: 0.9, z: -32 });
++    this._inst(new THREE.BoxGeometry(2.6, 0.28, 0.16), steel, rail);
++    for (let i = -8; i <= 8; i += 2) this._box(0.14, 1.8, 0.14, steel, i * 2.6, 0.9, -32);
++
++    // stalled car with hazard lights (blocked by the spill)
++    const car = new THREE.Group();
++    const body = this._box(2.0, 0.85, 4.4, this._std(0xc93b2c, { roughness: 0.4, metalness: 0.25 }), -9.5, 0.75, -2.4, 0.5);
++    void body;
++    this._box(1.8, 0.75, 2.2, this._std(0x1a2430, { roughness: 0.15, metalness: 0.3 }), -9.5, 1.5, -2.9, 0.5);
++    const haz = this._std(0xffb020, { emissive: 0xffa000, emissiveIntensity: 2.2 });
++    const l1 = this._box(0.3, 0.22, 0.1, haz, -10.3, 0.95, -0.55, 0.5);
++    const l2 = this._box(0.3, 0.22, 0.1, haz, -8.7, 0.95, -4.3, 0.5);
++    this._collider(-9.5, 0.9, -2.4, 2.2, 1.8, 4.6, 0.5);
++    this._tickers.push((dt, t) => {
++      const on = Math.sin(t * 5.4) > 0;
++      haz.emissiveIntensity = on ? 2.4 : 0.15;
++      l1.visible = l2.visible = on;
++    });
++    void car;
++
++    // traffic drums with reflective bands
++    const drumGeo = new THREE.CylinderGeometry(0.42, 0.5, 1.0, 12);
++    const drumMat = this._std(0xff7a1a, { roughness: 0.75 });
++    const drums = [{ x: -4, z: 12 }, { x: 3.5, z: 13.5 }, { x: -1, z: 16 }];
++    this._inst(drumGeo, drumMat, drums.map(d => ({ x: d.x, y: 0.5, z: d.z })));
++    const bands = [];
++    for (let i = 0; i < drums.length; i++) bands.push({ x: drums[i].x, y: 0.72, z: drums[i].z });
++    this._inst(new THREE.CylinderGeometry(0.45, 0.46, 0.18, 12), this._std(0xf4f6f8, { roughness: 0.5 }), bands);
++  }
++
++  // =============================================================== venue 2 ===
++  _venue_park() {
++    const stone = this._std(0x9b9587, { roughness: 0.95 });
++    const trunk = this._std(0x5b4630, { roughness: 1 });
++    const leafA = this._std(0x3f6b2f, { roughness: 1 });
++    const leafB = this._std(0x54823a, { roughness: 1 });
++    const wood = this._std(0x8a6f4a, { roughness: 0.9 });
++    const iron = this._std(0x2b3038, { metalness: 0.5, roughness: 0.5 });
++
++    // pond with a stone rim
++    const water = new THREE.Mesh(
++      this._track(new THREE.CircleGeometry(8.5, 40)),
++      this._std(0x2f6f8a, { roughness: 0.08, metalness: 0.75 })
++    );
++    water.rotation.x = -Math.PI / 2;
++    water.position.set(-16, 0.1, -13);
++    this.root.add(water);
++    const rim = this._track(new THREE.RingGeometry(8.5, 10.2, 40));
++    const rimMesh = new THREE.Mesh(rim, stone);
++    rimMesh.rotation.x = -Math.PI / 2;
++    rimMesh.position.set(-16, 0.11, -13);
++    rimMesh.receiveShadow = true;
++    this.root.add(rimMesh);
++    const stones = [];
++    for (let i = 0; i < 22; i++) {
++      const a = (i / 22) * TAU;
++      stones.push({ x: -16 + Math.cos(a) * 9.4, y: 0.16, z: -13 + Math.sin(a) * 9.4, ry: a, s: 0.7 + (i % 3) * 0.15 });
++    }
++    this._inst(new THREE.DodecahedronGeometry(0.6, 0), stone, stones);
++
++    // hedges: two long runs that frame the work area
++    const hedgeGeo = new THREE.BoxGeometry(9, 1.5, 1.4);
++    const hedgeA = [{ x: 12, y: 0.78, z: -8, ry: 0.25 }, { x: 16, y: 0.78, z: 4, ry: 1.35 }];
++    this._inst(hedgeGeo, leafB, hedgeA);
++    for (let i = 0; i < hedgeA.length; i++) this._collider(hedgeA[i].x, 0.78, hedgeA[i].z, 9, 1.6, 1.5, hedgeA[i].ry);
++
++    // trees: trunks + two cone tiers, instanced
++    const trunks = [];
++    const leaf1 = [];
++    const leaf2 = [];
++    const spots = [
++      [-23, 6], [-26, -3], [-8, -22], [2, -24], [11, -20], [20, -14],
++      [22, -2], [-20, 14], [-12, 19], [6, 21], [17, 15], [-2, 20], [26, 8], [-30, -8]
++    ];
++    for (let i = 0; i < spots.length; i++) {
++      const s = 0.85 + (i % 4) * 0.16;
++      trunks.push({ x: spots[i][0], y: 1.6 * s, z: spots[i][1], s: s });
++      leaf1.push({ x: spots[i][0], y: 4.1 * s, z: spots[i][1], s: s });
++      leaf2.push({ x: spots[i][0], y: 5.6 * s, z: spots[i][1], s: s * 0.82 });
++    }
++    this._inst(new THREE.CylinderGeometry(0.22, 0.32, 3.2, 8), trunk, trunks);
++    this._inst(new THREE.ConeGeometry(2.3, 2.6, 10), leafA, leaf1);
++    this._inst(new THREE.ConeGeometry(1.85, 2.3, 10), leafB, leaf2);
++
++    // gravel path from the entrance to the pile
++    const pathMat = this._std(0xb5a785, {
++      roughness: 1, transparent: true, opacity: 0.85,
++      polygonOffset: true, polygonOffsetFactor: -5, polygonOffsetUnits: -5
++    });
++    this._box(6.5, 0.03, 26, pathMat, 0, 0.09, 16, 0, false);
++
++    // benches
++    const bench = (x, z, ry) => {
++      this._box(2.6, 0.16, 0.7, wood, x, 0.62, z, ry);
++      this._box(2.6, 0.7, 0.16, wood, x, 0.95, z - 0.34, ry);
++      this._box(0.16, 0.62, 0.6, iron, x - 1.1, 0.31, z, ry);
++      this._box(0.16, 0.62, 0.6, iron, x + 1.1, 0.31, z, ry);
++      this._collider(x, 0.6, z, 2.8, 1.2, 0.9, ry);
++    };
++    bench(-9, 9, 0.3);
++    bench(-19, 12, -0.2);
++    bench(-24, -1, 1.2);
++
++    // park lamps with warm glow
++    const lampPost = (x, z) => {
++      this._cyl(0.09, 0.12, 4.2, 8, iron, x, 2.1, z);
++      this._box(0.55, 0.28, 0.55, this._std(0xfff2cf, { emissive: 0xffe6ac, emissiveIntensity: 1.3 }), x, 4.3, z);
++    };
++    lampPost(-12, 3);
++    lampPost(8, -6);
++
++    // landslide scar: broken turf and a small rubble fan on the pile side
++    const scar = new THREE.Mesh(
++      this._track(new THREE.CircleGeometry(9, 24)),
++      this._std(0x7a5a3c, { roughness: 1, transparent: true, opacity: 0.9, polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 })
++    );
++    scar.rotation.x = -Math.PI / 2;
++    scar.position.set(6, 0.095, -6);
++    scar.scale.set(1.5, 0.8, 1);
++    this.root.add(scar);
++    const rubble = [];
++    for (let i = 0; i < 16; i++) {
++      const a = Math.random() * TAU;
++      const r = 4 + Math.random() * 7;
++      rubble.push({ x: 6 + Math.cos(a) * r, y: 0.2, z: -6 + Math.sin(a) * r, s: 0.4 + Math.random() * 0.5, ry: a });
++    }
++    this._inst(new THREE.DodecahedronGeometry(0.5, 0), this._std(0x6f5133, { roughness: 1 }), rubble);
++
++    // low wooden fence along the path
++    const post = [];
++    for (let i = -4; i <= 4; i++) {
++      post.push({ x: i * 3.2 - 11, y: 0.55, z: 12, ry: 0 });
++    }
++    this._inst(new THREE.BoxGeometry(0.16, 1.1, 0.16), wood, post);
++    this._box(26, 0.12, 0.1, wood, -11, 0.95, 12, 0);
++  }
++
++  // =============================================================== venue 3 ===
++  _venue_bridge() {
++    const steel = this._std(0x5d6672, { metalness: 0.6, roughness: 0.42 });
++    const rust = this._std(0x8a5a34, { metalness: 0.25, roughness: 0.85 });
++    const deckMat = this._std(0x8d8f92, { roughness: 0.9 });
++    const concrete = this._std(0xa6a8a4, { roughness: 0.95 });
++
++    // canal under the deck: water + walls, the bridge crosses it
++    const water = new THREE.Mesh(
++      this._track(new THREE.PlaneGeometry(120, 26)),
++      this._std(0x2a5f78, { roughness: 0.12, metalness: 0.7 })
++    );
++    water.rotation.x = -Math.PI / 2;
++    water.position.set(0, -0.55, -18);
++    this.root.add(water);
++    this._box(120, 1.6, 1.0, concrete, 0, -0.8, -5.2, 0, false);
++    this._box(120, 1.6, 1.0, concrete, 0, -0.8, -30.8, 0, false);
++
++    // the bridge deck itself, slightly raised
++    this._box(18, 0.45, 30, deckMat, 0, 0.22, -18, 0, false);
++    const joints = [];
++    for (let i = 0; i < 8; i++) joints.push({ x: -8 + i * 2.3, y: 0.45, z: -18, sy: 0.02, sx: 1.6, sz: 0.12 });
++    this._inst(new THREE.BoxGeometry(1, 1, 1), this._std(0x2b2f34, { roughness: 0.9 }), joints, false);
++
++    // railings both sides: posts + two rails + X bracing
++    const posts = [];
++    for (let i = -7; i <= 7; i++) {
++      posts.push({ x: -8.6, y: 1.3, z: -18 + i * 2.0 });
++      posts.push({ x: 8.6, y: 1.3, z: -18 + i * 2.0 });
++    }
++    this._inst(new THREE.BoxGeometry(0.16, 1.9, 0.16), steel, posts);
++    this._box(0.18, 0.16, 30, steel, -8.6, 2.2, -18);
++    this._box(0.18, 0.16, 30, steel, 8.6, 2.2, -18);
++    this._box(0.18, 0.16, 30, steel, -8.6, 1.15, -18);
++    this._box(0.18, 0.16, 30, steel, 8.6, 1.15, -18);
++    this._collider(-8.6, 1.3, -18, 0.4, 2.2, 30, 0);
++    this._collider(8.6, 1.3, -18, 0.4, 2.2, 30, 0);
++
++    // truss arches over the deck
++    for (let s = -1; s <= 1; s += 2) {
++      for (let i = 0; i < 7; i++) {
++        const z0 = -30 + i * 4;
++        this._box(0.22, 4.2, 0.22, rust, s * 8.6, 3.6, z0);
++        if (i < 6) {
++          const a = Math.atan2(4.2, 4);
++          const diag = this._box(0.16, 0.16, 5.6, rust, s * 8.6, 5.6, z0 + 2, 0);
++          diag.rotation.x = a;
++        }
++      }
++      this._box(0.26, 0.26, 30, steel, s * 8.6, 5.7, -18);
++    }
++
++    // orange safety netting at the near end
++    const net = this._std(0xff7a1a, { transparent: true, opacity: 0.55, roughness: 0.9, side: THREE.DoubleSide });
++    const netMesh = new THREE.Mesh(this._track(new THREE.PlaneGeometry(17, 2.2)), net);
++    netMesh.position.set(0, 1.3, -3.2);
++    this.root.add(netMesh);
++    this._box(0.14, 2.4, 0.14, steel, -8.4, 1.2, -3.2);
++    this._box(0.14, 2.4, 0.14, steel, 8.4, 1.2, -3.2);
++
++    // scaffolding tower next to the deck
++    const scaf = [];
++    for (let y = 0; y < 4; y++) {
++      for (let x = 0; x < 2; x++) for (let z = 0; z < 2; z++) {
++        scaf.push({ x: 13 + x * 2.4, y: 1.05 + y * 2.1, z: -6 + z * 2.4 });
++      }
++    }
++    this._inst(new THREE.BoxGeometry(0.12, 2.1, 0.12), steel, scaf);
++    for (let y = 1; y <= 4; y++) {
++      this._box(2.7, 0.1, 0.1, steel, 14.2, y * 2.1, -6);
++      this._box(2.7, 0.1, 0.1, steel, 14.2, y * 2.1, -3.6);
++      this._box(0.1, 0.1, 2.7, steel, 13, y * 2.1, -4.8);
++    }
++    this._box(2.6, 0.16, 2.6, this._std(0x8a6f4a, { roughness: 1 }), 14.2, 4.3, -4.8);
++    this._collider(14.2, 2.2, -4.8, 3.2, 4.4, 3.2, 0);
++
++    // warning flags on the railing
++    const flagMat = this._std(0xd63a2a, { roughness: 0.9, side: THREE.DoubleSide });
++    for (let i = 0; i < 5; i++) {
++      const f = new THREE.Mesh(this._track(new THREE.PlaneGeometry(0.9, 0.6)), flagMat);
++      f.position.set(-8.7, 2.5, -8 - i * 4);
++      this.root.add(f);
++      this._tickers.push((dt, t) => { f.rotation.y = Math.sin(t * 3 + i) * 0.35; });
++    }
++  }
++
++  // =============================================================== venue 4 ===
++  _venue_night() {
++    const metal = this._std(0x383d44, { metalness: 0.45, roughness: 0.6 });
++    const black = this._std(0x14171b, { roughness: 0.85 });
++    const glow = this._std(0xfff3cf, { emissive: 0xfff0b8, emissiveIntensity: 2.4, roughness: 0.3 });
++
++    // two floodlight masts lighting the pad from opposite corners
++    const mast = (x, z) => {
++      this._cyl(0.16, 0.26, 13, 8, metal, x, 6.5, z);
++      this._box(2.6, 0.3, 0.5, metal, x, 13.1, z);
++      for (let i = 0; i < 3; i++) {
++        this._box(0.7, 0.5, 0.16, glow, x - 0.9 + i * 0.9, 13.55, z);
++      }
++      this._collider(x, 6.5, z, 0.7, 13, 0.7, 0);
++      const sp = new THREE.SpotLight(0xfff0c8, 120, 60, 0.72, 0.45, 1.6);
++      sp.position.set(x, 13.6, z);
++      sp.target.position.set(0, 0, 0);
++      this.root.add(sp);
++      this.root.add(sp.target);
++      this._lights.push(sp);
++      this._tickers.push((dt, t) => { sp.intensity = 118 + Math.sin(t * 11.3 + x) * 3; });
++      return sp;
++    };
++    mast(-17, -12);
++    mast(19, -8);
++
++    // generator trailer humming next to the office
++    this._box(3.2, 1.5, 1.8, this._std(0xd8b23a, { roughness: 0.7 }), -13, 0.95, 20, 0.3);
++    this._box(1.2, 0.9, 0.12, this._std(0x22303c, { roughness: 0.4, metalness: 0.3 }), -13, 1.1, 21.0);
++    this._cyl(0.36, 0.36, 0.3, 10, black, -14.2, 0.36, 20.3).rotation.z = Math.PI / 2;
++    this._cyl(0.36, 0.36, 0.3, 10, black, -11.8, 0.36, 20.3).rotation.z = Math.PI / 2;
++    this._collider(-13, 0.9, 20, 3.4, 1.8, 2.0, 0.3);
++
++    // neon site sign
++    const neon = this._sign('NIGHT CREW', 'WORK IN PROGRESS', '#101820', '#ffd24a', 8, 4);
++    neon.material.emissive = new THREE.Color(0xffb020);
++    neon.material.emissiveIntensity = 1.1;
++    neon.material.emissiveMap = neon.material.map;
++    neon.position.set(0, 3.6, 27.5);
++    this._tickers.push((dt, t) => {
++      neon.material.emissiveIntensity = Math.sin(t * 9) > -0.86 ? 1.1 : 0.2;
++    });
++
++    // parked dump truck silhouette
++    const t2 = new THREE.Group();
++    this._box(3.0, 2.6, 7.2, this._std(0x1d3f7a, { roughness: 0.5, metalness: 0.2 }), 21, 1.6, 6, 0.9);
++    this._box(3.2, 0.9, 2.0, black, 21, 3.2, 6.8, 0.9);
++    const tail = this._box(0.4, 0.3, 0.1, this._std(0xff3a2a, { emissive: 0xff2010, emissiveIntensity: 2 }), 19.6, 1.2, 9.6, 0.9);
++    this._collider(21, 1.6, 6, 3.4, 3.4, 7.6, 0.9);
++    this._tickers.push((dt, t) => { tail.material.emissiveIntensity = 1.2 + Math.sin(t * 1.6) * 0.5; });
++    void t2;
++
++    // hazard chevrons on the ground pointing to the truck pad
++    const chevMat = this._std(0xffb020, {
++      emissive: 0xffa000, emissiveIntensity: 0.6, roughness: 0.9,
++      transparent: true, opacity: 0.75, polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6
++    });
++    for (let i = 0; i < 6; i++) {
++      const c = this._box(1.0, 0.02, 0.3, chevMat, -6 + i * 2.4, 0.1, 8, 0, false);
++      c.rotation.y = 0.5;
++    }
++
++    // low glow lamps along the fence line
++    const lamps = [];
++    for (let i = 0; i < 10; i++) {
++      const a = Math.PI * 0.55 + i * 0.22;
++      lamps.push({ x: Math.sin(a) * 23, y: 0.35, z: Math.cos(a) * 23 });
++    }
++    this._inst(new THREE.SphereGeometry(0.2, 8, 6), this._std(0xfff0c0, { emissive: 0xffdd88, emissiveIntensity: 2 }), lamps);
++  }
++
++  // =============================================================== venue 5 ===
++  _venue_storm() {
++    const wet = this._std(0x4a545e, { roughness: 0.25, metalness: 0.45 });
++    const bag = this._std(0x9c8f6e, { roughness: 1 });
++    const rock = this._std(0x5f6469, { roughness: 1 });
++
++    // rain: a moving point cloud around the player
++    const N = 1400;
++    const pos = new Float32Array(N * 3);
++    const vel = new Float32Array(N);
++    for (let i = 0; i < N; i++) {
++      pos[i * 3] = (Math.random() - 0.5) * 70;
++      pos[i * 3 + 1] = Math.random() * 26;
++      pos[i * 3 + 2] = (Math.random() - 0.5) * 70;
++      vel[i] = 16 + Math.random() * 12;
++    }
++    const rgeo = this._track(new THREE.BufferGeometry());
++    rgeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
++    const rmat = this._track(new THREE.PointsMaterial({
++      color: 0xcfe0ee, size: 0.16, transparent: true, opacity: 0.55, depthWrite: false, sizeAttenuation: true
++    }));
++    const rain = new THREE.Points(rgeo, rmat);
++    rain.frustumCulled = false;
++    this.root.add(rain);
++    this._tickers.push((dt) => {
++      const a = rgeo.getAttribute('position');
++      const arr = a.array;
++      for (let i = 0; i < N; i++) {
++        arr[i * 3 + 1] -= vel[i] * dt;
++        arr[i * 3] -= dt * 2.2;
++        if (arr[i * 3 + 1] < 0) {
++          arr[i * 3 + 1] = 26;
++          arr[i * 3] = (Math.random() - 0.5) * 70;
++          arr[i * 3 + 2] = (Math.random() - 0.5) * 70;
++        }
++      }
++      a.needsUpdate = true;
++    });
++
++    // big puddles that reflect the sky
++    const puddleMat = this._std(0x5c707f, { roughness: 0.05, metalness: 0.95 });
++    const puddles = [
++      { x: 8, z: 10, s: 3.4 }, { x: -7, z: 14, s: 2.6 }, { x: -14, z: 2, s: 3.0 },
++      { x: 15, z: -3, s: 2.2 }, { x: 2, z: -14, s: 2.8 }, { x: 18, z: 13, s: 2.0 }
++    ];
++    const pgeo = this._track(new THREE.CircleGeometry(1, 20));
++    for (let i = 0; i < puddles.length; i++) {
++      const p = new THREE.Mesh(pgeo, puddleMat);
++      p.rotation.x = -Math.PI / 2;
++      p.position.set(puddles[i].x, 0.088, puddles[i].z);
++      p.scale.set(puddles[i].s, puddles[i].s * 0.7, 1);
++      this.root.add(p);
++    }
++
++    // collapsed retaining wall: a fan of rubble with exposed rebar
++    this._box(14, 1.7, 1.1, wet, -12, 0.85, -14, 0.35);
++    this._collider(-12, 0.85, -14, 14, 1.8, 1.3, 0.35);
++    const rocks = [];
++    for (let i = 0; i < 22; i++) {
++      const a = -0.6 + Math.random() * 1.2;
++      const r = 2 + Math.random() * 8;
++      rocks.push({
++        x: -12 + Math.sin(a) * r, y: 0.2 + Math.random() * 0.3, z: -13 + Math.cos(a) * r,
++        s: 0.4 + Math.random() * 0.75, ry: Math.random() * TAU
++      });
++    }
++    this._inst(new THREE.DodecahedronGeometry(0.6, 0), rock, rocks);
++    const rebar = [];
++    for (let i = 0; i < 8; i++) {
++      rebar.push({ x: -17 + i * 1.4, y: 1.5, z: -13.6, rz: (Math.random() - 0.5) * 0.5, rx: (Math.random() - 0.5) * 0.4 });
++    }
++    this._inst(new THREE.CylinderGeometry(0.045, 0.045, 1.7, 5), this._std(0x8a5a34, { metalness: 0.6, roughness: 0.6 }), rebar);
++
++    // sandbag line keeping the water away from the pad
++    const bags = [];
++    for (let i = 0; i < 16; i++) {
++      bags.push({ x: 22 - i * 0.1, y: 0.22 + (i % 2) * 0.35, z: 16 - i * 0.9, ry: 0.4 + i * 0.3, sx: 1.2, sy: 0.7, sz: 1 });
++    }
++    this._inst(new THREE.BoxGeometry(0.9, 0.55, 1.5), bag, bags);
++
++    // rescue van with flashing blue lights
++    this._box(3.4, 2.4, 6.6, this._std(0xe8eced, { roughness: 0.5, metalness: 0.2 }), 20, 1.45, -4, -0.4);
++    this._box(3.5, 0.9, 1.0, this._std(0xd63a2a, { roughness: 0.6 }), 20, 0.9, -4, -0.4);
++    this._box(1.4, 0.5, 1.6, this._std(0x1b2530, { roughness: 0.2, metalness: 0.3 }), 20, 2.4, -6.2, -0.4);
++    const beaconMat = this._std(0x3a7bff, { emissive: 0x2a6bff, emissiveIntensity: 3 });
++    const b1 = this._box(0.7, 0.22, 0.3, beaconMat, 19.3, 2.85, -4, -0.4);
++    const b2 = this._box(0.7, 0.22, 0.3, this._std(0xff2a2a, { emissive: 0xff1010, emissiveIntensity: 3 }), 20.7, 2.85, -4, -0.4);
++    this._collider(20, 1.45, -4, 3.6, 2.6, 7.2, -0.4);
++    const beacon = new THREE.PointLight(0x2a6bff, 14, 30, 2);
++    beacon.position.set(20, 3.2, -4);
++    this.root.add(beacon);
++    this._lights.push(beacon);
++    this._tickers.push((dt, t) => {
++      const on = Math.sin(t * 7.5) > 0;
++      beaconMat.emissiveIntensity = on ? 4 : 0.2;
++      b2.material.emissiveIntensity = on ? 0.2 : 4;
++      b1.visible = b2.visible = true;
++      beacon.intensity = on ? 16 : 3;
++    });
++
++    // warning tape strung between posts
++    const tapeMat = this._std(0xffd24a, { roughness: 0.9, side: THREE.DoubleSide });
++    for (let i = 0; i < 4; i++) {
++      const t1 = new THREE.Mesh(this._track(new THREE.PlaneGeometry(5.4, 0.28)), tapeMat);
++      t1.position.set(-16 + i * 5.2, 1.1, 12.5);
++      this.root.add(t1);
++      this._tickers.push((dt, t) => { t1.rotation.z = Math.sin(t * 4 + i) * 0.05; });
++    }
++  }
++
++  // =============================================================== venue 6 ===
++  _venue_skyline() {
++    const steel = this._std(0xe0a92a, { metalness: 0.5, roughness: 0.5 });
++    const dark = this._std(0x2f343a, { metalness: 0.4, roughness: 0.6 });
++    const concrete = this._std(0xb3b2ac, { roughness: 0.95 });
++    const rebarMat = this._std(0x8a5a34, { metalness: 0.65, roughness: 0.55 });
++
++    // --- tower crane: mast, jib, counter-jib, counterweight, hook
++    const mx = -16, mz = -16, H = 34;
++    const mastGeo = new THREE.BoxGeometry(0.22, 2.4, 0.22);
++    const mast = [];
++    for (let y = 0; y < H; y += 2.4) {
++      mast.push({ x: mx - 0.8, y: y + 1.2, z: mz - 0.8 });
++      mast.push({ x: mx + 0.8, y: y + 1.2, z: mz - 0.8 });
++      mast.push({ x: mx - 0.8, y: y + 1.2, z: mz + 0.8 });
++      mast.push({ x: mx + 0.8, y: y + 1.2, z: mz + 0.8 });
++    }
++    this._inst(mastGeo, steel, mast);
++    for (let y = 2.4; y < H; y += 4.8) {
++      this._box(1.8, 0.14, 0.14, steel, mx, y, mz - 0.8, 0, false);
++      this._box(1.8, 0.14, 0.14, steel, mx, y, mz + 0.8, 0, false);
++    }
++    this._box(1.8, 0.6, 1.8, dark, mx, 0.3, mz);
++    this._collider(mx, 1.0, mz, 2.6, 2.0, 2.6, 0);
++
++    const jib = this._box(30, 0.5, 0.7, steel, mx + 13, H, mz, 0, false);
++    jib.rotation.y = 0.2;
++    this._box(9, 0.5, 0.7, steel, mx - 5, H, mz, 0.2, false);
++    this._box(2.0, 2.0, 2.4, dark, mx - 9, H - 0.6, mz, 0.2);
++    this._box(1.6, 1.4, 1.6, dark, mx + 1.2, H + 0.9, mz, 0.2);
++    // hook block on a cable
++    const hook = new THREE.Group();
++    this._cyl(0.05, 0.05, 18, 5, dark, 0, -9, 0);
++    this._box(0.9, 0.9, 0.9, dark, 0, -18.4, 0);
++    const hookMesh = new THREE.Mesh(this._track(new THREE.TorusGeometry(0.45, 0.12, 6, 12, Math.PI * 1.5)), dark);
++    hookMesh.position.set(0, -19.2, 0);
++    hookMesh.castShadow = true;
++    hook.add(hookMesh);
++    hook.position.set(mx + 16, H - 0.4, mz);
++    this.root.add(hook);
++    this._tickers.push((dt, t) => {
++      hook.rotation.y = Math.sin(t * 0.5) * 0.5;
++      hook.position.x = mx + 16 + Math.sin(t * 0.35) * 2.5;
++    });
++
++    // --- foundation pit with rebar grid and formwork
++    const pit = new THREE.Group();
++    const px = 8, pz = -10;
++    this._box(16, 0.4, 16, this._std(0x6a6459, { roughness: 1 }), px, 0.12, pz, 0, false);
++    this._box(16, 2.6, 0.5, concrete, px, 1.3, pz - 8);
++    this._box(16, 2.6, 0.5, concrete, px, 1.3, pz + 8);
++    this._box(0.5, 2.6, 16, concrete, px - 8, 1.3, pz);
++    this._box(0.5, 2.6, 16, concrete, px + 8, 1.3, pz);
++    this._collider(px, 1.3, pz - 8, 16, 2.6, 0.7, 0);
++    this._collider(px, 1.3, pz + 8, 16, 2.6, 0.7, 0);
++    this._collider(px - 8, 1.3, pz, 0.7, 2.6, 16, 0);
++    this._collider(px + 8, 1.3, pz, 0.7, 2.6, 16, 0);
++    const bars = [];
++    for (let i = 0; i <= 10; i++) {
++      bars.push({ x: px - 7 + i * 1.4, y: 0.75, z: pz, rz: Math.PI / 2, sx: 1, sy: 1, sz: 1 });
++    }
++    const barGeo = new THREE.CylinderGeometry(0.05, 0.05, 15, 5);
++    const barsX = bars.map(b => ({ x: b.x, y: b.y, z: pz, rz: Math.PI / 2 }));
++    const barsZ = [];
++    for (let i = 0; i <= 10; i++) barsZ.push({ x: px, y: 0.9, z: pz - 7 + i * 1.4, rx: Math.PI / 2 });
++    this._inst(barGeo, rebarMat, barsX);
++    this._inst(barGeo, rebarMat, barsZ);
++    void pit;
++
++    // --- half-built concrete tower with floor slabs and column stubs
++    for (let f = 0; f < 5; f++) {
++      const y = 3.2 + f * 3.0;
++      this._box(13, 0.32, 13, concrete, -2, y, -30, 0, false);
++      if (f < 4) {
++        const cols = [];
++        for (const cxo of [-5.8, 0, 5.8]) for (const czo of [-5.8, 0, 5.8]) {
++          cols.push({ x: -2 + cxo, y: y + 1.5, z: -30 + czo });
++        }
++        this._inst(new THREE.CylinderGeometry(0.34, 0.34, 2.7, 8), concrete, cols);
++      }
++    }
++    this._collider(-2, 9, -30, 13.4, 18, 13.4, 0);
++
++    // --- scaffolding along the tower face
++    const sc = [];
++    for (let y = 0; y < 6; y++) for (let x = 0; x < 4; x++) {
++      sc.push({ x: -2 - 7.2, y: 1.0 + y * 2.0, z: -30 - 6 + x * 4 });
++    }
++    this._inst(new THREE.BoxGeometry(0.1, 2.0, 0.1), steel, sc);
++    for (let y = 1; y <= 6; y++) this._box(0.1, 0.1, 12, steel, -9.2, y * 2.0, -30);
++
++    // --- portacabin, mixer truck and material stacks
++    this._box(6.4, 2.6, 2.6, this._std(0xf0f2f4, { roughness: 0.6 }), 20, 1.4, 16, -0.35);
++    this._box(2.0, 0.9, 0.1, this._std(0x203040, { emissive: 0x9fd8ff, emissiveIntensity: 0.4, roughness: 0.2 }), 18.9, 1.7, 17.2, -0.35);
++    this._collider(20, 1.4, 16, 6.6, 2.7, 2.8, -0.35);
++
++    this._box(3.2, 2.6, 7.0, this._std(0xe6e9ec, { roughness: 0.5 }), 22, 1.5, -2, -0.9);
++    const drum = this._cyl(1.35, 1.35, 2.0, 14, this._std(0xd8dbde, { roughness: 0.7 }), 22, 2.8, -5.6);
++    drum.rotation.x = Math.PI / 2;
++    this._collider(22, 1.6, -3, 3.6, 3.4, 8.0, -0.9);
++
++    const stack = [];
++    for (let i = 0; i < 12; i++) {
++      stack.push({ x: 14 + (i % 3) * 1.9, y: 0.3 + Math.floor(i / 3) * 0.55, z: 20 + (i % 2) * 1.4, ry: 0.1 * i });
++    }
++    this._inst(new THREE.BoxGeometry(1.7, 0.5, 1.2), this._std(0x9aa3ab, { roughness: 0.8 }), stack);
++  }
++
++  // ------------------------------------------------------------------ update
++  update(dt, focus) {
++    this._time += dt;
++    const t = this._time;
++    const list = this._tickers;
++    for (let i = 0; i < list.length; i++) {
++      try { list[i](dt, t); } catch (e) { /* a broken ticker must not stop the game */ }
++    }
++    if (focus && this.venue && this.venue.key === 'storm') {
++      // keep the rain box around the player instead of the site centre
++      this.root.position.x += 0;
++      void focus;
++    }
++  }
++
++  // ----------------------------------------------------------------- dispose
++  dispose() {
++    const w = this.world;
++    for (let i = 0; i < this._bodies.length; i++) {
++      try { w.removeRigidBody(this._bodies[i]); } catch (e) { /* ignore */ }
++    }
++    this._bodies.length = 0;
++    this._tickers.length = 0;
++    this._lights.length = 0;
++    this._colliders.length = 0;
++
++    if (this.root) {
++      for (let i = this.root.children.length - 1; i >= 0; i--) {
++        this.root.remove(this.root.children[i]);
++      }
++    }
++    for (let i = 0; i < this._geo.length; i++) { try { this._geo[i].dispose(); } catch (e) {} }
++    for (let i = 0; i < this._mat.length; i++) { try { this._mat[i].dispose(); } catch (e) {} }
++    for (let i = 0; i < this._tex.length; i++) { try { this._tex[i].dispose(); } catch (e) {} }
++    this._geo.length = 0;
++    this._mat.length = 0;
++    this._tex.length = 0;
++    this.info = null;
++  }
++}
+diff --git a/src/main.js b/src/main.js
+index 03be474..a885ba0 100644
+--- a/src/main.js
++++ b/src/main.js
+@@ -13,12 +13,29 @@ import DigAnimator from './vehicle/DigAnimator.js';
+ import GameUI from './ui/GameUI.js';
+ // (Music removed in M2)
+ import TrafficPhysics from './core/TrafficPhysics.js';
+-import JobManager from './gameplay/JobManager.js';
++// M8: JobManager (old, temporary) is replaced by the real job system in Jobs.js
++import { JobSystem, JobPanels, START, upgradeCost, MAX_LEVEL } from './gameplay/Jobs.js';
++import SiteSystem, { venueFor } from './gameplay/SiteSystem.js';
++import Portal from './core/CrazySDK.js';
++
++const portal = new Portal();
+ 
+ let fx = null, guide = null, sfx = null, tutStep = 0, lastTarget = 'none';
+ function safe(f) { try { return f(); } catch (e) { console.warn('[fx]', e); } }
+-let ui = null, music = null, trafficPhys = null, jm = null, currentJob = 1, lastLoads = 0, lastCoinsShown = -1;
+-const JOB_TITLE = 'Clear the Highway', JOB_OBJ = 'Load the blue truck with dirt';
++let ui = null, music = null, trafficPhys = null, lastLoads = 0, lastCoinsShown = -1;
++let jobs = null, panels = null, siteSys = null;
++let currentJobId = 1, maxLoads = 3, jobStarted = false, inAd = false, _muteBeforeAd = false;
++// QA shortcuts: ?job=4 starts on job 4, ?unlock=1 ignores the unlock rules
++const URLQ = new URLSearchParams(location.search);
++const FORCE_UNLOCK = URLQ.has('unlock');
++const START_JOB = parseInt(URLQ.get('job') || '', 10);
++function jobCtx() {
++    return {
++        engineLevel: saveData.engineLevel,
++        hydraulicLevel: saveData.hydraulicLevel,
++        bucketLevel: saveData.bucketLevel || 1
++    };
++}
+ let dig = null, digSound = null;
+ const dm = { fill: 1, drop: -1, b: 0, k: 0, was: false };
+ function updateDig(dt) {
+@@ -57,11 +74,11 @@ function initUi() {
+     safe(() => {
+         ui = new GameUI();
+         music = hub;
+-        jm = new JobManager();
+-        jm.onTick = (t) => { if (ui) ui.setTimer(Math.ceil(t)); };
+-        jm.onFail = () => { if (ui) ui.toast('Time is up! Try again', 'warn'); window.restartJob(); };
+-        jm.start(currentJob);
+-        ui.setJob(JOB_TITLE, JOB_OBJ, 'Scoop dirt 0/3');
++        jobs = new JobSystem();
++        panels = new JobPanels();
++        if (world && RAPIER) siteSys = new SiteSystem(scene, world);
++        jobs.onTick = (t) => { if (ui) ui.setTimer(Math.ceil(t)); };
++        jobs.onFail = () => { onJobFail(); };
+         ui.setCoins(saveData.coins);
+         music.start(); music.startAmbience();
+         window.addEventListener('bh-hint', e => { if (ui) ui.toast(e.detail, 'warn'); });
+@@ -72,18 +89,17 @@ function updateUi(dt) {
+     safe(() => {
+         if (!trafficPhys && world && RAPIER) { trafficPhys = new TrafficPhysics(world, RAPIER, worldBuilder.trafficCars); trafficPhys.init(); }
+         if (trafficPhys) trafficPhys.update();
++        // the very first job starts once physics and the UI both exist
++        if (!jobStarted && physReady && jobs && worldBuilder && worldBuilder.truckGroup) {
++            jobStarted = true;
++            const first = Number.isFinite(START_JOB) && jobs.get(START_JOB) ? START_JOB : jobs.lastPlayed();
++            beginJob(first);
++        }
+         if (ui) {
+             ui.setSpeed(vehicle.currentSpeed);
+             if (saveData.coins !== lastCoinsShown) { lastCoinsShown = saveData.coins; ui.setCoins(saveData.coins); }
+-            const lv = worldBuilder.truckDirtLevel;
+-            if (lv !== lastLoads) {
+-                if (lv > lastLoads && jm) jm.addLoad();
+-                lastLoads = lv;
+-                ui.setJob(JOB_TITLE, JOB_OBJ, 'Scoop dirt ' + lv + '/3');
+-                if (lv > 0 && lv < 3) ui.toast('Nice! Load ' + lv + ' of 3 delivered', 'success');
+-            }
+         }
+-        if (jm && !jobCompleted) jm.update(dt);
++        if (jobs && !jobCompleted && !(panels && panels.isOpen())) jobs.update(dt);
+         if (music) music.setIntensity(Math.min(1, vehicle.currentSpeed / 40));
+     });
+ }
+@@ -94,7 +110,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+ 
+ const SAVE_KEY = 'terraform_city_save_v6';
+-let saveData = { coins: 0, engineLevel: 1, hydraulicLevel: 1 };
++let saveData = { coins: 0, engineLevel: 1, hydraulicLevel: 1, bucketLevel: 1 };
+ 
+ const canvas = document.getElementById('game-container');
+ const scene = new THREE.Scene();
+@@ -322,7 +338,7 @@ let isGameRunning = true;
+ let hasScoopedDirt = false;
+ let jobCompleted = false;
+ let cameraShake = 0; 
+-const MAX_LOADS = 3;
++// loads per job now come from Jobs.js (job.loads)
+ const hub = new AudioHub();
+ const audio = hub; // old name kept: Vehicle.updateVisuals(audio, dt) still receives it
+ function toggleMute() {
+@@ -337,23 +353,57 @@ audio.playDumpThud = () => {};
+ audio.playSuccess = () => hub.complete();
+ let qaManager = null;
+ 
+-function loadSave() { try { const raw = localStorage.getItem(SAVE_KEY); if (raw) saveData = JSON.parse(raw); } catch(e) {} }
++function loadSave() {
++    const defaults = { coins: 0, engineLevel: 1, hydraulicLevel: 1, bucketLevel: 1 };
++    try { const raw = localStorage.getItem(SAVE_KEY); if (raw) saveData = Object.assign(defaults, JSON.parse(raw)); } catch(e) { saveData = defaults; }
++}
+ function writeSave() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(saveData)); } catch(e) {} }
+ loadSave();
+ document.getElementById('coin-count').textContent = saveData.coins;
+ 
++function shopBtnText(kind, level) {
++    const cost = upgradeCost(kind, level, 0);
++    if (cost === null) return { text: 'MAX', off: true };
++    return { text: `Level ${level}/${MAX_LEVEL}  -  ${cost} coins`, off: saveData.coins < cost };
++}
+ function updateShopUI() {
+-    const engBtn = document.getElementById('buy-engine-btn');
+-    if(engBtn) { engBtn.textContent = saveData.engineLevel >= 3 ? 'MAX' : `Upgrade (${saveData.engineLevel * 100} Coins)`; engBtn.disabled = saveData.coins < saveData.engineLevel * 100 || saveData.engineLevel >= 3; }
+-    const hydBtn = document.getElementById('buy-hydraulic-btn');
+-    if(hydBtn) { hydBtn.textContent = saveData.hydraulicLevel >= 3 ? 'MAX' : `Upgrade (${saveData.hydraulicLevel * 100} Coins)`; hydBtn.disabled = saveData.coins < saveData.hydraulicLevel * 100 || saveData.hydraulicLevel >= 3; }
++    const pairs = [['engine', 'buy-engine-btn'], ['hydraulic', 'buy-hydraulic-btn'], ['bucket', 'buy-bucket-btn']];
++    for (let i = 0; i < pairs.length; i++) {
++        const kind = pairs[i][0], id = pairs[i][1];
++        const el = document.getElementById(id);
++        if (!el) continue;
++        const lvl = saveData[kind + 'Level'] || 1;
++        const st = shopBtnText(kind, lvl);
++        el.textContent = st.text;
++        el.disabled = st.off;
++    }
++    const rankEl = document.getElementById('shop-rank');
++    if (rankEl && jobs) {
++        const r = jobs.rankInfo();
++        rankEl.textContent = 'Rank: ' + r.name + (r.next ? '  (' + r.into + '/' + r.need + ' XP to ' + r.next + ')' : '  (top rank)');
++    }
++}
++function buyUpgrade(kind) {
++    const key = kind + 'Level';
++    const lvl = saveData[key] || 1;
++    const cost = upgradeCost(kind, lvl, 0);
++    if (cost === null || saveData.coins < cost) return;
++    saveData.coins -= cost;
++    saveData[key] = lvl + 1;
++    writeSave();
++    const cc = document.getElementById('coin-count'); if (cc) cc.textContent = saveData.coins;
++    if (vehicle) vehicle.setUpgrades(saveData);
++    updateShopUI();
++    safe(() => { if (ui) ui.setCoins(saveData.coins); });
++    safe(() => hub.coin());
+ }
+ 
+-const shopBtn = document.getElementById('shop-btn'); if(shopBtn) shopBtn.addEventListener('click', () => { document.getElementById('shop-overlay').classList.add('active'); isGameRunning = false; updateShopUI(); });
+-const closeShopBtn = document.getElementById('close-shop-btn'); if(closeShopBtn) closeShopBtn.addEventListener('click', () => { document.getElementById('shop-overlay').classList.remove('active'); isGameRunning = true; });
++const shopBtn = document.getElementById('shop-btn'); if(shopBtn) shopBtn.addEventListener('click', () => { document.getElementById('shop-overlay').classList.add('active'); isGameRunning = false; portal.gameplayStop(); updateShopUI(); });
++const closeShopBtn = document.getElementById('close-shop-btn'); if(closeShopBtn) closeShopBtn.addEventListener('click', () => { document.getElementById('shop-overlay').classList.remove('active'); isGameRunning = true; portal.gameplayStart(); });
+ 
+-const buyEngBtn = document.getElementById('buy-engine-btn'); if(buyEngBtn) buyEngBtn.addEventListener('click', () => { const cost = saveData.engineLevel * 100; if (saveData.coins >= cost && saveData.engineLevel < 3) { saveData.coins -= cost; saveData.engineLevel++; writeSave(); document.getElementById('coin-count').textContent = saveData.coins; if (vehicle) vehicle.setUpgrades(saveData); updateShopUI(); } });
+-const buyHydBtn = document.getElementById('buy-hydraulic-btn'); if(buyHydBtn) buyHydBtn.addEventListener('click', () => { const cost = saveData.hydraulicLevel * 100; if (saveData.coins >= cost && saveData.hydraulicLevel < 3) { saveData.coins -= cost; saveData.hydraulicLevel++; writeSave(); document.getElementById('coin-count').textContent = saveData.coins; if (vehicle) vehicle.setUpgrades(saveData); updateShopUI(); } });
++const buyEngBtn = document.getElementById('buy-engine-btn'); if(buyEngBtn) buyEngBtn.addEventListener('click', () => buyUpgrade('engine'));
++const buyHydBtn = document.getElementById('buy-hydraulic-btn'); if(buyHydBtn) buyHydBtn.addEventListener('click', () => buyUpgrade('hydraulic'));
++const buyBucketBtn = document.getElementById('buy-bucket-btn'); if(buyBucketBtn) buyBucketBtn.addEventListener('click', () => buyUpgrade('bucket'));
+ 
+ const input = { forward: false, backward: false, left: false, right: false, brake: false };
+ 
+@@ -370,6 +420,7 @@ function togglePause() {
+         input.forward = false; input.backward = false; input.left = false; input.right = false; input.brake = false;
+         safe(() => hub.setEngine(0, 0));
+     }
++    if (paused) portal.gameplayStop(); else portal.gameplayStart();
+ }
+ // tell the Sound button the saved mute state at start
+ safe(() => window.dispatchEvent(new CustomEvent('bh-mute', { detail: !!hub.isMuted() })));
+@@ -378,7 +429,7 @@ safe(() => window.dispatchEvent(new CustomEvent('bh-mute', { detail: !!hub.isMut
+ const CODE_TO_KEY = {
+     KeyW: 'w', ArrowUp: 'arrowup', KeyS: 's', ArrowDown: 'arrowdown',
+     KeyA: 'a', ArrowLeft: 'arrowleft', KeyD: 'd', ArrowRight: 'arrowright',
+-    Space: ' ', KeyE: 'e', KeyF: 'f', KeyC: 'c', KeyR: 'r', KeyM: 'm', KeyP: 'p'
++    Space: ' ', KeyE: 'e', KeyF: 'f', KeyC: 'c', KeyR: 'r', KeyM: 'm', KeyP: 'p', KeyJ: 'j'
+ };
+ function normKey(ev) {
+     let k = CODE_TO_KEY[ev.code];
+@@ -405,6 +456,7 @@ window.addEventListener('keydown', (ev) => {
+     if (key === 'd' || key === 'arrowright') input.right = true;
+     if (e.key === ' ') input.brake = true;
+     if (key === 'r') window.restartJob();
++    if (key === 'j') openJobPicker();
+     if (key === 'm') toggleMute();
+     if (key === 'p') {
+       const wasPaused = paused;
+@@ -469,33 +521,228 @@ document.querySelectorAll('.cam-btn').forEach(btn => {
+     });
+ });
+ 
+-window.restartJob = () => {
+-    hasScoopedDirt = false; jobCompleted = false;
+-    const overlay = document.getElementById('victory-overlay'); if(overlay) overlay.classList.remove('active');
+-    const statusVal = document.getElementById('job-status-val'); if(statusVal) statusVal.textContent = 'SCOOP DIRT (0/3)';
+-    const missionDesc = document.getElementById('mission-desc'); if(missionDesc) missionDesc.textContent = 'Clear the rubble from the highway and load it into the blue truck.';
+-    
++// ============================================================
++// JOBS + SITES + PORTAL (M8). One entry point: beginJob(id).
++// ============================================================
++
++// Move the sky, sun, fog and exposure to the venue of this job.
++function applyVenue(job) {
++    const v = venueFor(job.id);
++    const sun = worldBuilder.sunLight;
++    const hemi = worldBuilder.hemiLight;
++    const sky = worldBuilder.sky;
++    if (sun) {
++        sun.color.set(v.sun.color);
++        sun.intensity = v.sun.intensity;
++        if (v.sky.sunDir) _sunOffset.set(v.sky.sunDir[0] * 0.55, Math.max(90, v.sky.sunDir[1]), v.sky.sunDir[2] * 0.55);
++    }
++    if (hemi) {
++        hemi.intensity = v.hemi.intensity;
++        hemi.color.set(v.hemi.sky);
++        hemi.groundColor.set(v.hemi.ground);
++    }
++    if (sky && sky.material && sky.material.uniforms) {
++        const u = sky.material.uniforms;
++        u.topColor.value.set(v.sky.top);
++        u.bottomColor.value.set(v.sky.bottom);
++        u.sunColor.value.set(v.sky.sun);
++        if (v.sky.sunDir) u.sunDirection.value.set(v.sky.sunDir[0], v.sky.sunDir[1], v.sky.sunDir[2]).normalize();
++        u.exponent.value = v.key === 'storm' ? 1.1 : v.key === 'night' ? 0.9 : 0.6;
++    }
++    if (scene.fog) {
++        if (scene.fog.color) scene.fog.color.set(v.fog.color);
++        if (typeof scene.fog.density === 'number') scene.fog.density = v.fog.density;
++    }
++    if (scene.background && scene.background.set) scene.background.set(v.fog.color);
++    renderer.toneMappingExposure = v.exposure;
++}
++
++// Mute the game while an ad plays, then restore whatever the player had.
++function runAd(kind) {
++    return new Promise((resolve) => {
++        const req = kind === 'rewarded' ? portal.requestRewarded.bind(portal) : portal.requestMidgame.bind(portal);
++        let settled = false;
++        const done = (ok) => {
++            if (settled) return;
++            settled = true;
++            inAd = false;
++            safe(() => hub.setMuted(!!_muteBeforeAd));
++            resolve(!!ok);
++        };
++        req({
++            onStart: () => {
++                inAd = true;
++                isGameRunning = false;
++                _muteBeforeAd = safe(() => hub.isMuted()) || false;
++                safe(() => hub.setMuted(true));
++            },
++            onFinish: (ok) => done(ok)
++        }).then((ok) => done(ok)).catch(() => done(false));
++    });
++}
++
++function beginJob(id) {
++    if (!jobs) return;
++    if (panels) panels.hide();
++    const ctx = jobCtx();
++    let want = id;
++    if (!FORCE_UNLOCK && jobs.lockReason(want, ctx)) want = jobs.lastPlayed();
++    const job = jobs.start(want);
++
++    currentJobId = job.id;
++    maxLoads = job.loads;
++    hasScoopedDirt = false;
++    jobCompleted = false;
++    lastLoads = 0;
++
++    // ---- where does this job happen? (Jobs.js finds free ground in the city)
++    jobs.layout(worldBuilder.buildingData, worldBuilder.propColliders);
++    let site = jobs.siteFor(job.id);
++    if (!site || !site.ok) site = { ok: true, keep: true };
++    const pile = site.pile || { x: 0, z: -120 };
++    const truck = site.truck || { x: pile.x + 15, z: pile.z };
++    worldBuilder.moveJobSite(pile.x, pile.z, truck.x, truck.z);
++
++    // ---- build the venue for this job
++    applyVenue(job);
++    if (!siteSys && world && RAPIER) siteSys = new SiteSystem(scene, world);
++    if (siteSys) {
++        try { siteSys.build(job.id, site, { world: world, RAPIER: RAPIER }); }
++        catch (e) { console.warn('[site] build failed', e); }
++    }
++
++    // ---- reset the world state
+     worldBuilder.resetDirtPile();
+-    safe(() => { if (fx) fx.reset(); lastTarget = 'none'; });
+-    safe(() => { lastLoads = 0; if (jm) jm.start(currentJob); if (ui) ui.setJob(JOB_TITLE, JOB_OBJ, 'Scoop dirt 0/3'); });
+-    
++    if (worldBuilder.truckDirtMeshes) {
++        worldBuilder.truckDirtMeshes.forEach(mesh => worldBuilder.truckGroup.remove(mesh));
++    }
++    worldBuilder.truckDirtMeshes = [];
++    worldBuilder.truckDirtLevel = 0;
++
+     if (vehicle && physReady) {
+-        vehicle.chassisBody.setTranslation({ x: -35, y: 1.2, z: 10 }, true);
+-        vehicle.chassisBody.setRotation({ x: 0, y: 1, z: 0, w: 0 }, true); 
++        vehicle.chassisBody.setTranslation({ x: START.x, y: START.y, z: START.z }, true);
++        vehicle.chassisBody.setRotation({ x: 0, y: 1, z: 0, w: 0 }, true);
+         vehicle.chassisBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+         vehicle.chassisBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+         vehicle.resetInterpolation();
+-        vehicle.hasDirt = false; 
++        vehicle.hasDirt = false;
+         vehicle.bucketDirtGroup.children.forEach(c => c.visible = false);
+-        
+-        worldBuilder.truckDirtMeshes.forEach(mesh => worldBuilder.truckGroup.remove(mesh));
+-        worldBuilder.truckDirtMeshes = [];
+-        worldBuilder.truckDirtLevel = 0;
++        vehicle.pilePos = worldBuilder.dirtPileGroup.position;
++        vehicle.truckPos = worldBuilder.truckGroup.position.clone().add(new THREE.Vector3(0, 2, -1));
+     }
+-};
+ 
+-const restartBtn = document.getElementById('restart-btn'); if(restartBtn) restartBtn.addEventListener('click', window.restartJob);
+-const victoryReplayBtn = document.getElementById('victory-replay-btn'); if(victoryReplayBtn) victoryReplayBtn.addEventListener('click', window.restartJob);
++    safe(() => { if (fx) fx.reset(); lastTarget = 'none'; });
++
++    // ---- HUD
++    if (ui) {
++        ui.setJob(job.name, job.objective(), jobs.stepText());
++        ui.setTimer(job.time);
++        ui.setCoins(saveData.coins);
++        lastCoinsShown = saveData.coins;
++    }
++    const missionDesc = document.getElementById('mission-desc'); if (missionDesc) missionDesc.textContent = job.story;
++    const titleEl = document.querySelector('.mission-title'); if (titleEl) titleEl.textContent = job.name;
++    const overlay = document.getElementById('victory-overlay'); if (overlay) overlay.classList.remove('active');
++
++    if (panels) panels.briefing(job, 4200);
++
++    paused = false;
++    isGameRunning = true;
++    const pauseOv = document.getElementById('pause-overlay'); if (pauseOv) pauseOv.classList.remove('active');
++    portal.gameplayStart();
++    safe(() => hub.setEngine(0, 0));
++}
++window.beginJob = beginJob;                 // console / debug
++window.restartJob = () => beginJob(currentJobId);
++
++function finishJob() {
++    if (jobCompleted || !jobs) return;
++    jobCompleted = true;
++    const job = jobs.current;
++    const r = jobs.complete(jobCtx());
++
++    saveData.coins += r.coins;
++    writeSave();
++    lastCoinsShown = saveData.coins;
++    const cc = document.getElementById('coin-count'); if (cc) cc.textContent = saveData.coins;
++    if (ui) { ui.setTimer(null); ui.setJob(job.name, job.objective(), 'COMPLETE!'); ui.setCoins(saveData.coins); }
++
++    safe(() => hub.complete());
++    safe(() => { if (fx) fx.onDump(worldBuilder.truckGroup.position.clone(), worldBuilder.truckGroup.position.clone()); });
++    portal.happytime();
++    portal.gameplayStop();
++    isGameRunning = false;
++    cameraShake = 0.6;
++
++    if (panels) {
++        panels.showResult(r, {
++            onNext: (nextId) => {
++                const target = nextId || job.id;
++                runAd('midgame').then(() => beginJob(target));
++            },
++            onReplay: () => beginJob(job.id),
++            onJobs: () => openJobPicker()
++        });
++    }
++}
++
++function onJobFail() {
++    if (!jobs || !panels) return;
++    isGameRunning = false;
++    portal.gameplayStop();
++    safe(() => hub.setEngine(0, 0));
++    if (ui) ui.toast('Time is up!', 'warn');
++    const canAd = portal.ready;
++    panels.showFail(jobs.current, jobs.state.loads, {
++        onRetry: () => beginJob(currentJobId),
++        onAd: canAd ? () => {
++            panels.hide();
++            runAd('rewarded').then((ok) => {
++                if (ok) {
++                    jobs.addTime(60);
++                    isGameRunning = true;
++                    portal.gameplayStart();
++                    if (ui) ui.toast('+60 seconds. Go!', 'success');
++                } else {
++                    beginJob(currentJobId);
++                }
++            });
++        } : null,
++        onJobs: () => openJobPicker()
++    });
++}
++
++function openJobPicker() {
++    if (!jobs || !panels) return;
++    panels.hide();
++    isGameRunning = false;
++    portal.gameplayStop();
++    jobs.layout(worldBuilder.buildingData, worldBuilder.propColliders);
++    panels.showPicker(jobs, jobCtx(), {
++        onPick: (id) => beginJob(id),
++        onCoins: (amt) => {
++            saveData.coins += amt;
++            writeSave();
++            if (ui) ui.setCoins(saveData.coins);
++            lastCoinsShown = saveData.coins;
++            const cc = document.getElementById('coin-count'); if (cc) cc.textContent = saveData.coins;
++            safe(() => hub.coin());
++            safe(() => { if (ui) ui.toast('Daily bonus +' + amt + ' coins', 'success'); });
++        },
++        onClose: () => {
++            isGameRunning = true;
++            portal.gameplayStart();
++        }
++    });
++}
++window.openJobs = openJobPicker;
++
++const restartBtn = document.getElementById('restart-btn');
++if (restartBtn) restartBtn.addEventListener('click', () => beginJob(currentJobId));
++const victoryReplayBtn = document.getElementById('victory-replay-btn');
++if (victoryReplayBtn) victoryReplayBtn.addEventListener('click', () => beginJob(currentJobId));
++const jobsBtn = document.getElementById('jobs-btn');
++if (jobsBtn) jobsBtn.addEventListener('click', openJobPicker);
+ 
+ async function initPhysics() {
+     try {
+@@ -504,13 +751,34 @@ async function initPhysics() {
+         world = new RAPIER.World({ x: 0, y: -9.81, z: 0 }); world.timestep = 1/60;
+         worldBuilder.createPhysicsColliders(world, RAPIER);
+         vehicle = new Vehicle(scene, world, RAPIER); vehicle.setUpgrades(saveData);
+-        physReady = true; window.restartJob();
+-        
++        physReady = true;
++
+         qaManager = new QAManager(scene, camera, renderer, vehicle, worldBuilder);
+-        
++        portal.loadingStop();
++
++        document.getElementById('loading-screen').classList.add('hidden');
++        // the first job starts from updateUi() once the UI exists
++    } catch (e) {
++        console.error(e);
++        portal.loadingStop();
+         document.getElementById('loading-screen').classList.add('hidden');
+-    } catch (e) { console.error(e); document.getElementById('loading-screen').classList.add('hidden'); }
++    }
+ }
++
++// The portal is initialised while the loading screen is still up (CG requirement).
++async function bootPortal() {
++    try {
++        portal.loadingStart();
++        portal.setMuteHandler((on) => {
++            if (!on) return;
++            safe(() => hub.setMuted(true));
++            safe(() => { if (ui) ui.toast('Sound is muted by CrazyGames', 'warn'); });
++            safe(() => window.dispatchEvent(new CustomEvent('bh-mute', { detail: true })));
++        });
++        await portal.init();
++    } catch (e) { console.warn('[portal] boot failed', e); }
++}
++bootPortal();
+ initPhysics();
+ 
+ // ==========================================
+@@ -532,12 +800,13 @@ function drawMinimap() {
+     miniCtx.moveTo(0, cy); miniCtx.lineTo(180, cy);
+     miniCtx.stroke();
+ 
+-    let targetX, targetZ;
+-    if (vehicle.hasDirt) {
+-        targetX = 18; targetZ = -100;
+-    } else {
+-        targetX = 0; targetZ = -100;
+-    }
++    // M8: the map points at the real pile / truck of the current job,
++    // wherever the job site is (every job happens somewhere else now).
++    const pileP = worldBuilder && worldBuilder.dirtPileGroup ? worldBuilder.dirtPileGroup.position : null;
++    const truckP = worldBuilder && worldBuilder.truckGroup ? worldBuilder.truckGroup.position : null;
++    const goal = (vehicle.hasDirt && truckP) ? truckP : pileP;
++    const targetX = goal ? goal.x : 0;
++    const targetZ = goal ? goal.z : -100;
+ 
+     const mx = cx + (targetX - vx) * scale;
+     const my = cy + (targetZ - vz) * scale;
+@@ -551,6 +820,19 @@ function drawMinimap() {
+     
+     const distToCenter = Math.hypot(mx - cx, my - cy);
+     const maxRadius = 85;
++
++    // the blue truck is always marked, so you can line up the dump
++    if (truckP && !vehicle.hasDirt) {
++        const tx = cx + (truckP.x - vx) * scale;
++        const ty = cy + (truckP.z - vz) * scale;
++        if (Math.hypot(tx - cx, ty - cy) <= maxRadius) {
++            miniCtx.fillStyle = '#2563eb';
++            miniCtx.fillRect(tx - 4, ty - 4, 8, 8);
++            miniCtx.strokeStyle = 'rgba(255,255,255,0.8)';
++            miniCtx.lineWidth = 1;
++            miniCtx.strokeRect(tx - 4, ty - 4, 8, 8);
++        }
++    }
+     
+     let drawMx = mx;
+     let drawMy = my;
+@@ -768,7 +1050,9 @@ function animate() {
+             
+             if (!hasScoopedDirt && vehicle.hasDirt) {
+                 hasScoopedDirt = true;
+-                const statusVal = document.getElementById('job-status-val'); if(statusVal) statusVal.textContent = 'DUMP IN TRUCK';
++                if (jobs) jobs.setPhase('dump');
++                if (ui && jobs) ui.setJob(jobs.current.name, jobs.objective(), jobs.stepText());
++                else { const statusVal = document.getElementById('job-status-val'); if (statusVal) statusVal.textContent = 'DUMP IN TRUCK'; }
+                 worldBuilder.shrinkDirtPile();
+                 safe(() => { if (fx) fx.onScoop(bucketPos.clone()); if (sfx) sfx.scoop(); if (guide && tutStep === 2) { guide.nextTutorialStep(); tutStep = 3; } }); 
+                 audio.playDirtCrunch(); 
+@@ -784,30 +1068,30 @@ function animate() {
+                     safe(() => { if (fx) fx.onDump(worldBuilder.truckGroup.position.clone(), bucketPos.clone()); if (sfx) sfx.coin(); if (guide && tutStep === 3) { guide.nextTutorialStep(); tutStep = 4; } });
+                     cameraShake = 0.5;
+                     
+-                    if (worldBuilder.truckDirtLevel < MAX_LOADS) {
+-                        const statusVal = document.getElementById('job-status-val'); 
+-                        if(statusVal) statusVal.textContent = `SCOOP DIRT (${worldBuilder.truckDirtLevel}/3)`;
++                    // real load accounting comes from Jobs.js (loads, tips, stars)
++                    const res = jobs ? jobs.addLoad(jobCtx()) : null;
++                    if (res) {
++                        if (res.tip) {
++                            saveData.coins += res.tip;
++                            writeSave();
++                            if (ui) ui.setCoins(saveData.coins);
++                            lastCoinsShown = saveData.coins;
++                            const cc = document.getElementById('coin-count'); if (cc) cc.textContent = saveData.coins;
++                        }
++                        if (ui) ui.setJob(jobs.current.name, jobs.objective(), jobs.stepText());
+                         audio.playScoop();
+-                    } else {
+-                        jobCompleted = true; 
+-                        saveData.coins += 150;
+-                        safe(() => { if (ui) { const r = jm ? jm.complete() : null; ui.setTimer(null); ui.toast('Job complete! +150 coins' + (r && r.stars ? '  ' + r.stars + ' star(s)' : ''), 'success'); } }); 
+-                        writeSave();
+-                        const coinCount = document.getElementById('coin-count'); if(coinCount) coinCount.textContent = saveData.coins;
+-                        const statusVal = document.getElementById('job-status-val'); if(statusVal) statusVal.textContent = 'COMPLETE!';
+-                        const overlay = document.getElementById('victory-overlay'); if(overlay && !fx) overlay.classList.add('active');
+-                        audio.playSuccess();
+-                        safe(() => { if (fx) fx.showJobComplete(saveData.coins, () => window.restartJob()); if (sfx) sfx.complete(); });
+-                        try { window.CrazyGames.SDK.game.happytime(); } catch(e) {}
++                        if (res.loads < res.total && ui) ui.toast('Load ' + res.loads + '/' + res.total + '  +' + res.tip + ' coins', 'success');
+                     }
++                    if (worldBuilder.truckDirtLevel >= maxLoads) finishJob();
+                 }
+             }
+         }
+         updateSunShadow();
+         trackFPS(dt);
+         updateFx(dt);
++        if (siteSys) safe(() => siteSys.update(dt, vehicle.mesh.position));
+         vehicle.pilePos = worldBuilder.dirtPileGroup.position;
+-        if (!vehicle.truckPos) vehicle.truckPos = worldBuilder.truckGroup.position.clone().add(new THREE.Vector3(0, 2, -1));
++        vehicle.truckPos = worldBuilder.truckGroup.position.clone().add(new THREE.Vector3(0, 2, -1));
+         updateUi(dt);
+         updateDig(dt);
+         renderFrame();
+diff --git a/vite.config.js b/vite.config.js
+index 041854f..d43db4a 100644
+--- a/vite.config.js
++++ b/vite.config.js
+@@ -1,2 +1,19 @@
+ import { defineConfig } from 'vite';
+-export default defineConfig({ base: './' });
++
++// base './' keeps the build working from any sub-folder (CrazyGames, GitHub Pages, itch).
++// allowedHosts: true is needed for the hosted preview iframe and for Codespaces URLs.
++export default defineConfig({
++  base: './',
++  server: {
++    host: true,
++    port: 5173,
++    strictPort: true,
++    allowedHosts: true
++  },
++  preview: {
++    host: true,
++    port: 4173,
++    strictPort: true,
++    allowedHosts: true
++  }
++});

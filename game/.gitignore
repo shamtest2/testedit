@@ -1,0 +1,13 @@
+*.bak*
+dump/
+src_backup/
+project_dump.txt
+.executor/
+.executor.log
+node_modules/
+dist/
+backup/
+kk
+.vite.log
+.preview.log
+tools/executor.old.txt
